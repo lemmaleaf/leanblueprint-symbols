@@ -3,3 +3,13 @@ name: defines binds contains
 
 name: defterm
 <em class="defterm">{{ obj.attributes.term }}</em>
+
+name: enumerate
+<ol class="enumerate">
+{% for item in obj %}
+  <li{% if item.userdata.symbols_item %} id="{{ item.userdata.symbols_item }}"{% endif %}>{{ item }}</li>
+{% endfor %}
+</ol>
+
+name: ref itemref
+{% if 'label' in obj.idref and obj.idref.label.ref %}{% if obj.userdata.symbols_part %}<a class="sym-itemref" data-cap="{{ obj.idref.label.caption or '' }}" href="{{ obj.symbols_url }}">{{ obj.idref.label.ref }}({{ obj.userdata.symbols_part }})</a>{% else %}<a href="{{ obj.idref.label.url }}">{{ obj.idref.label.ref }}</a>{% endif %}{% else %}??{% if obj.userdata.symbols_part %}({{ obj.userdata.symbols_part }}){% endif %}{% endif %}

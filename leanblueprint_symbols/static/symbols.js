@@ -103,8 +103,10 @@
     if (window.readerOpenProof) window.readerOpenProof(target);   // a target inside a folded proof: open it
     if (location.hash === '#' + target.id) target.scrollIntoView({ block: 'start' });
     else location.hash = target.id;
-    flash(itemOf(target));
+    flash(itemOf(target)); flashItem(target);
   }
+  // a link to one item of a card's numbered list (an anchor label--item-3): that item is marked too
+  function flashItem(el) { if (el.tagName === 'LI' && /--item-/.test(el.id)) flash(el); }
   function flash(el) { el.classList.remove('sym-hit'); void el.offsetWidth; el.classList.add('sym-hit'); }
 
   document.addEventListener('click', (e) => {
@@ -170,7 +172,7 @@
     if (m) { window.scrollTo(0, +m[1]); history.replaceState(null, '', location.pathname); }
     else if (location.hash.length > 1) {
       const el = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-      if (el) { el.scrollIntoView({ block: 'start' }); flash(itemOf(el)); }
+      if (el) { el.scrollIntoView({ block: 'start' }); flash(itemOf(el)); flashItem(el); }
     }
     showBack();
   });

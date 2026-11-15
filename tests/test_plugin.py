@@ -106,7 +106,7 @@ def test_proof_chips(tmp_path):
     assert items["thm:lean"]["number"] == "1.2" and items["thm:lean"]["tex"] == "$a>0$."
     assert items["def:a"]["tex"] == "Let $a=1$."   # \defines (with its Lean name) and \label removed from the text
     syms = json.loads((tmp_path / "blueprint-data.json").read_text())["symbols"]
-    assert {"sym": "a", "type": "real number", "label": "def:a", "lean": "X.a"} in syms
+    assert {"sym": "a", "type": "real number", "label": "def:a", "lean": "X.a", "item": None} in syms
     assert items["thm:lean"]["where"] == {"chapter": "1 C"}
     assert items["thm:big"]["contains"] == ["lem:paper", "lem:bare"] and items["thm:big"]["tex"] == "$a=1$."
     html = (tmp_path / "p" / "sect0001.html").read_text()
@@ -236,3 +236,85 @@ def test_planned_cards_are_plans(tmp_path):
     by = {i["label"]: i for i in data["items"]}
     assert by["def:later"]["planned"] is True and by["def:bad"]["planned"] is False
     assert r"\planned" not in by["def:later"]["tex"]
+
+
+ITEMS_DOC = r"""\documentclass{report}
+\usepackage{amsmath, amsthm}
+\usepackage{hyperref}
+\usepackage{blueprint}
+\usepackage{symbols}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{lemma}[definition]{Lemma}
+\begin{document}
+\chapter{C}
+\begin{definition}[unit and pair]\label{def:a}
+\defines{u}{real number}
+Let $u=1$.
+\begin{enumerate}
+\item The \defterm{unit} is $u$.
+\item \defines{p}{pair of real numbers} The \defterm{pair} is $p=(u,u)$.
+\begin{enumerate}\item first $p_1$ \item second\end{enumerate}
+\end{enumerate}
+Then:
+\begin{enumerate}
+\item third.
+\end{enumerate}
+\end{definition}
+\begin{definition}[plain]\label{def:plain}
+\uses{def:a}
+\defines{q}{real number}
+The \defterm{plain} number is $q=u$.
+\end{definition}
+\begin{lemma}\label{lem:b}
+\uses{def:a, def:plain}
+By Lemma~\ref{lem:b}(1), Definition~\ref{def:a}(2), \ref{def:a}(2.1), \itemref{def:a}{3}, \ref{def:a} (x), \ref{def:a}(see) and
+\ref{def:plain}, \ref{def:plain}(1): a pair, a unit, a plain number, $p$, $u$, $q$.
+\begin{enumerate}\item $u>0$. \item $q>0$.\end{enumerate}
+\end{lemma}
+\begin{lemma}\label{lem:bad}
+\uses{def:a}
+By Definition~\ref{def:a}(7), $u=1$.
+\end{lemma}
+\end{document}
+"""
+
+
+@pytest.mark.slow
+def test_item_anchors_and_item_links(tmp_path):
+    r"""Each item of a card's numbered lists has an anchor label--item-n (1-based, counted across the card's lists, nested
+    label--item-n-m); a term or a symbol defined inside an item links to the item, one defined outside to the card;
+    \ref{label}(n) and \itemref{label}{n} are one link to the item, the caption word before it taken in. Planted control:
+    a reference to an item the card does not have (def:a(7)) is reported and links to the card."""
+    items = _build(tmp_path, ITEMS_DOC)
+    html = (tmp_path / "p" / "sect0001.html").read_text()
+    ids = re.findall(r'<li id="([^"]+)"', html)
+    assert ids == ["def:a--item-1", "def:a--item-2", "def:a--item-2-1", "def:a--item-2-2", "def:a--item-3",
+                   "lem:b--item-1", "lem:b--item-2"]
+    assert items["def:a"]["anchors"] == ids[:5] and items["def:plain"]["anchors"] == []
+    # terms: inside an item -> the item; outside -> the card
+    terms = {t: url for t, url, _ in json.loads(re.search(r"window\.symbolsTerms = (\[.*?\]);</script>", html).group(1))}
+    assert terms["unit"] == "sect0001.html#def:a--item-1" and terms["pair"] == "sect0001.html#def:a--item-2"
+    assert terms["plain"] == "sect0001.html#def:plain"
+    assert items["def:a"]["term_items"] == {"unit": "def:a--item-1", "pair": "def:a--item-2"}
+    # symbols: \defines inside item 2 -> the item; \defines before the list -> the card
+    assert r"\href{sect0001.html#def:a--item-2}{p}" in html and r"\href{sect0001.html#def:a--item-2}{p_1}" in html
+    assert r"\href{sect0001.html#def:a}{u}" in html and r"\href{sect0001.html#def:plain}{q}" in html
+    syms = {s["sym"]: s["item"] for s in json.loads((tmp_path / "blueprint-data.json").read_text())["symbols"]}
+    assert syms == {"u": None, "p": "def:a--item-2", "q": None}
+    # item references: one link each, the caption taken in when it matches the card
+    link = lambda href, text: f'href="sect0001.html#{href}">{text}</a>' in html   # noqa: E731
+    assert link("lem:b--item-1", "Lemma&#160;1.3(1)")
+    assert link("def:a--item-2", "Definition&#160;1.1(2)") and "Definition&#160;<a" not in html.split('id="lem:b"')[1].split('id="lem:bad"')[0]
+    assert link("def:a--item-2-1", "1.1(2.1)") and link("def:a--item-3", "1.1(3)")
+    assert '<a href="sect0001.html#def:a">1.1</a> (x)' in html and '<a href="sect0001.html#def:a">1.1</a>(see)' in html
+    assert '<a href="sect0001.html#def:plain">1.2</a>,' in html
+    # a card without a numbered list (parts written inline): the item reference links to the card, no problem
+    assert link("def:plain", "1.2(1)")
+    # planted control: no item 7 -> reported, linked to the card
+    rep = json.loads((tmp_path / "symbols-report.json").read_text())
+    assert [p["label"] for p in rep if p["kind"] == "itemref"] == ["lem:bad"], rep
+    assert link("def:a", "Definition&#160;1.1(7)")
+    # the source keeps the reference as written (the card's text and hash do not change)
+    assert r"\ref{def:a}(2)" in items["lem:b"]["tex"] and r"\ref{def:a}(see)" in items["lem:b"]["tex"]
+    assert r"\itemref{def:a}{3}" in items["lem:b"]["tex"]

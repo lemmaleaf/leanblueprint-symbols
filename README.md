@@ -27,6 +27,17 @@ plugin works one level down, on the symbols inside formulas:
   complete for each undeclared symbol; the `strict` option stops the build on any problem.
 * **Linked terms.** Every page carries its defined terms (`window.symbolsTerms`); the first use of a term in each other card
   links to the card that defines it, with the same preview as a symbol (after MathJax, so TeX source is never touched).
+* **Item-level links.** Each item of a labelled card's numbered lists (`enumerate`) has an anchor: `<label>--item-<n>`,
+  counted from 1 across the card's top-level lists in order (a list resumed after text goes on counting), and
+  `<label>--item-<n>-<m>` for item m of a list nested in item n (`def:path--item-2`, `def:path--item-2-1`). A term
+  (`\defterm`) or a symbol (`\defines`) written inside an item links to that item; one written outside the lists links
+  to the card. A reference to an item is written `\ref{label}(3)` (nested: `\ref{label}(2.1)`), or `\itemref{label}{3}`:
+  one link to the item's anchor, reading "1.20(3)"; a caption word written just before it that matches the card
+  ("Lemma~\ref{lem:x}(3)", also "Lemmas~") is taken into the link: "Lemma 1.20(3)". The "(3)" must follow the brace at
+  once and hold only numbers (`\ref{x} (see)` and `\ref{x}(a)` stay text). A card whose parts are written inline,
+  "(1) ... (2) ...", has no item anchors: the reference links to the card. A reference to an item a card with a list does
+  not have is a checker problem (`itemref`) and links to the card. The anchors are exported (`items[].anchors`,
+  `items[].term_items`, `symbols[].item`). Load `symbols` after `hyperref`, which brings back plasTeX's own `\ref`.
 * **Hyperlinked formulas.** Every declared symbol in every formula links to the item that declares it. Following a
   link opens a preview of that item where you are, with "Go to" and "Back to where you were". A tap that lands a
   few pixels beside a small symbol still counts.

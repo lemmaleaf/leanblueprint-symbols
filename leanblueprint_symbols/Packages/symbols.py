@@ -43,6 +43,9 @@ Every lemma, theorem, proposition and corollary carries a chip saying what its p
 Lean declaration it names is verified, by the status file, or \leanok without one), "proof on paper" (a proof
 follows it in the text), or "no proof yet"; a conjecture's chip says "open".
 
+Each item of a labelled card's numbered lists gets an HTML id, <label>--item-<n> (1-based; nested <label>--item-<n>-<m>);
+a term or symbol defined inside an item links to the item, and \ref{label}(3) (or \itemref{label}{3}) is one link to item 3.
+
 In the HTML output, every symbol whose declaration is known links to the item that declares it; following such a link
 opens a preview of the item in place (symbols.js), with "Go to" and "Back to where you were".
 """
@@ -54,6 +57,7 @@ import re
 from pathlib import Path
 
 from plasTeX import Command
+from plasTeX.Base.LaTeX.Crossref import ref as _BaseRef
 from plasTeX.Base.LaTeX import Math as M
 from plasTeX.Logging import getLogger
 from plasTeX.PackageResource import PackageCss, PackageJs, PackageProcessFilecontents, PackageTemplateDir
@@ -104,6 +108,7 @@ class defines(Command):
     def digest(self, tokens):
         Command.digest(self, tokens)
         sym = re.sub(r"\s+", " ", _text(self.attributes["sym"])).strip()
+        self.userdata["symbols_sym"] = sym   # the node stays in the tree: the list item it sits in is found from it
         self.parentNode.userdata.setdefault("defines", []).append((sym, _text(self.attributes["type"]).strip()))
         if self.attributes.get("lean"):
             self.parentNode.userdata.setdefault("defines_lean", []).append((sym, self.attributes["lean"].strip()))
@@ -152,7 +157,126 @@ class defterm(Command):
         # was stored as "<plasTeX.TeXFragment object ...>", and matched no title and linked nothing)
         term = term if isinstance(term, str) else (getattr(term, "source", None) or getattr(term, "textContent", "") or "")
         term = re.sub(r"\s+", " ", term)
+        self.userdata["symbols_term"] = term.strip()   # the list item it sits in is found from this node
         self.parentNode.userdata.setdefault("terms", []).append(term.strip())
+
+
+ITEM_PART = re.compile(r"[0-9]{1,3}(?:[.-][0-9]{1,3}){0,3}")
+
+
+class ref(_BaseRef):
+    r"""\ref{label}, and \ref{label}(3): a reference to item 3 of a card's numbered list (\ref{label}(2.1) for item 1 of
+    the list inside item 2). The "(3)" must follow the brace at once and hold only numbers; it becomes part of one link
+    to the item's anchor ("Lemma 1.20(3)": a "Lemma~" written just before it, matching the card's own caption, is taken
+    into the link). Anything else after the brace ("\ref{x} (see)", "\ref{x}(a)") is left as text."""
+
+    def invoke(self, tex):
+        res = _BaseRef.invoke(self, tex)
+        toks = []
+        try:
+            for t in tex.itertokens():
+                toks.append(t)
+                if len(toks) == 1 and not (t == "(" and t.catcode == t.CC_OTHER):
+                    break
+                if t == ")" or len(toks) > 16:
+                    break
+        except Exception:   # never break parsing over a peek
+            pass
+        part = "".join(str(t) for t in toks[1:-1]) if len(toks) >= 3 and toks[-1] == ")" else None
+        if part is not None and ITEM_PART.fullmatch(part) and all(t.catcode == t.CC_OTHER for t in toks):
+            self.userdata["symbols_part"] = part
+        else:
+            tex.pushTokens(toks)
+        return res
+
+    @property
+    def source(self):
+        s = _BaseRef.source.fget(self)
+        part = self.userdata.get("symbols_part")
+        return s + f"({part})" if part else s
+
+    @property
+    def symbols_url(self):
+        """The link of an item reference: the item's anchor on the card's page, or the card when it has no such item."""
+        return _item_ref_url(self)
+
+
+class itemref(Command):
+    r"""\itemref{label}{3}: the same as \ref{label}(3)."""
+    args = "label:idref part:str"
+    macroName = "itemref"
+
+    def digest(self, tokens):
+        Command.digest(self, tokens)
+        self.userdata["symbols_part"] = str(self.attributes.get("part", "")).strip()
+
+    @property
+    def symbols_url(self):
+        """The link of an item reference: the item's anchor on the card's page, or the card when it has no such item."""
+        return _item_ref_url(self)
+
+
+def _item_ref_url(node) -> str:
+    target = (getattr(node, "idref", None) or {}).get("label")
+    url = (getattr(target, "url", None) or f"#{getattr(target, 'id', '')}") if target is not None else ""
+    a = node.userdata.get("symbols_part_anchor")
+    return _at(url, a) if a else url
+
+
+def item_anchor(label: str, path) -> str:
+    """The HTML id of an item of a card's numbered list: label--item-2 (1-based), label--item-2-1 nested."""
+    return f"{label}--item-" + "-".join(str(k) for k in path)
+
+
+def _number_items(card, ids, label) -> list:
+    """Give each item of a card's numbered lists (enumerate) its anchor (userdata symbols_item), counted from 1 across
+    the card's top-level lists in order (a list resumed after text goes on counting), nested lists within their item.
+    Returns the anchors in document order."""
+    def near(node, names):
+        p = node.parentNode
+        while p is not None and p is not card:
+            if p.nodeName in names:
+                return p
+            p = p.parentNode
+        return None
+    lists = [e for e in card.getElementsByTagName("enumerate") if _owner(e.parentNode, ids) is card]
+    out = []
+
+    def walk(lst, path, k):
+        for it in lst.childNodes:
+            if getattr(it, "nodeName", "") != "item":
+                continue
+            k += 1
+            here = path + [k]
+            it.userdata["symbols_item"] = item_anchor(label, here)
+            out.append(it.userdata["symbols_item"])
+            sub = 0
+            for e in lists:
+                if near(e, ("item",)) is it:
+                    sub = walk(e, here, sub)
+        return k
+
+    top = 0
+    for e in lists:
+        if near(e, ("enumerate",)) is None:
+            top = walk(e, [], top)
+    return out
+
+
+def _item_of(node, card):
+    """The anchor of the list item of `card` that holds `node`, or None."""
+    p = node.parentNode
+    while p is not None and p is not card:
+        a = getattr(p, "userdata", {}).get("symbols_item")
+        if a:
+            return a
+        p = p.parentNode
+    return None
+
+
+def _at(url: str, anchor: str) -> str:
+    """A card's url with its fragment replaced by an item's anchor."""
+    return url.split("#", 1)[0] + "#" + anchor
 
 
 def _owner(node, items):
@@ -185,9 +309,10 @@ def ProcessOptions(options, document):
             for it in state.get("items", []):
                 node = state.get("by_label", {}).get(it["label"])
                 url = getattr(node, "url", None) if node is not None else None
-                for t in it.get("terms", []):
+                for t in it.get("terms", []):   # a term defined inside a list item links to that item
                     if url:
-                        out.append([t, url, it["label"]])
+                        a = it.get("term_items", {}).get(t)
+                        out.append([t, _at(url, a) if a else url, it["label"]])
             out.sort(key=lambda x: -len(x[0]))
             state["terms_js"] = "<script>window.symbolsTerms = " + json.dumps(out).replace("</", "<\\/") + ";</script>\n"
         return state["terms_js"]
@@ -208,6 +333,22 @@ def ProcessOptions(options, document):
         return s.replace("</head>", add + "</head>", 1) if add else s
 
     document.addPackageResource(PackageProcessFilecontents(data=head_links))
+
+    def absorb_caption(doc, s: str) -> str:
+        """'Lemma~\\ref{x}(3)' reads as one link, 'Lemma 1.20(3)': the word just before an item reference, when it is
+        the card's own caption (or its plural), moves into the link. Done on the page, not the tree, so the card's source
+        and its hash stay as written."""
+        if "sym-itemref" not in s:
+            return s
+
+        def move(m):
+            word, cap = m.group(1), m.group(3)
+            if cap and word.lower() in (cap.lower(), cap.lower() + "s"):
+                return m.group(0)[len(word) + len(m.group(2)):].replace('">', '">' + word + "&#160;", 1)
+            return m.group(0)
+        return re.sub(r'(\w+)(&#160;|\xa0| )<a class="sym-itemref" data-cap="([^"]*)" href="[^"]*">', move, s)
+
+    document.addPackageResource(PackageProcessFilecontents(data=absorb_caption))
     state = document.userdata.setdefault("symbols", {})
 
     def collect() -> list:
@@ -246,10 +387,25 @@ def ProcessOptions(options, document):
             src = n.source or ""
             parts = len(re.findall(r"\\item\b", src)) if src.count("\\begin{enumerate}") == 1 else 0
             title = getattr(n, "title", None)
+            # item-level anchors (a labelled card only: an unlabelled one has no stable name), and the item each term
+            # and symbol is defined in, when it is defined inside one
+            anchors, term_items, sym_items = [], {}, {}
+            if n.id and not re.fullmatch(r"a\d+", n.id):
+                anchors = _number_items(n, ids, n.id)
+                for d in n.getElementsByTagName(("defterm", "defines")):
+                    if _owner(d.parentNode, ids) is not n:
+                        continue
+                    a = _item_of(d, n)
+                    if a and d.userdata.get("symbols_term"):
+                        term_items.setdefault(d.userdata["symbols_term"], a)
+                    if a and d.userdata.get("symbols_sym"):
+                        sym_items.setdefault(d.userdata["symbols_sym"], a)
+            n.userdata["symbols_anchors"] = anchors
             names = [x.strip() for x in re.split(r",| and ", title.textContent) if x.strip()] \
                 if title is not None and kind == "definition" else []
             items.append({"label": label, "kind": kind, "defines": defs, "source": src, "names": names, "binds": bnds, "terms": terms, "leans": dict(leans), "contains": conts,
                           "uses": uses, "parts": parts, "planned": is_planned,
+                          "anchors": anchors, "term_items": term_items, "sym_items": sym_items,
                           "math": [m.source for m in maths], "text": n.textContent, "parent": parent_label,
                           "node": n})
         return items
@@ -259,7 +415,7 @@ def ProcessOptions(options, document):
         # a planned card (\planned) is a plan, not mathematics: the checks read only the written cards and their proofs
         planned_labels = {it["label"] for it in items if it.get("planned")}
         written = [it for it in items if not it.get("planned") and it.get("parent") not in planned_labels]
-        problems = core.check([{k: v for k, v in it.items() if k not in ("node", "leans", "contains", "planned")} for it in written])
+        problems = core.check([{k: v for k, v in it.items() if k not in ("node", "leans", "contains", "planned", "anchors", "term_items", "sym_items")} for it in written])
         for it in written:   # a definition with a name introduces that name as a term in its text (user, 2026-11-01)
             title = getattr(it["node"], "title", None)
             if it["kind"] != "definition" or title is None:
@@ -280,13 +436,30 @@ def ProcessOptions(options, document):
                     problems.append({"kind": "contains", "label": it["label"],
                                      "detail": f"{c}: {'no such item' if c not in labels else 'an item cannot contain itself'}"})
         by_label = {it["label"]: it["node"] for it in items}
+        # references to items (\ref{label}(3), \itemref{label}{3}): the item's anchor, or the card when it has no such
+        # item; reported when the card has a numbered list without that item (parts written inline, "(1) ... (2) ...",
+        # have no anchors: the reference links to the card and is not a problem)
+        for r in document.getElementsByTagName(("ref", "itemref")):
+            part = r.userdata.get("symbols_part")
+            target = (getattr(r, "idref", None) or {}).get("label")
+            if not part or target is None:
+                continue
+            anchor = item_anchor(target.id, re.split(r"[.-]", part))
+            if anchor in target.userdata.get("symbols_anchors", []):
+                r.userdata["symbols_part_anchor"] = anchor   # the url is known only at render time (symbols_url)
+            elif target.userdata.get("symbols_anchors"):   # a list without that item: a broken reference
+                owner = _owner(r.parentNode, {id(it["node"]) for it in items})
+                where = next((it["label"] for it in items if it["node"] is owner), "the text")
+                problems.append({"kind": "itemref", "label": where,
+                                 "detail": f"{target.id}({part}): the card has no item {part}; linked to the card"})
         table = {}
         for it in items:
             for sym, ty in it["defines"]:
                 if not core.tokens(sym):   # an operator declared by mistake: reported by the checker, not a symbol
                     continue
                 table.setdefault(core.key_of(sym), {"sym": sym, "type": ty, "label": it["label"],
-                                                     "lean": it.get("leans", {}).get(sym)})
+                                                     "lean": it.get("leans", {}).get(sym),
+                                                     "item": it.get("sym_items", {}).get(sym)})
         state.update(items=items, problems=problems, table=table, by_label=by_label)
         outdir = Path(document.userdata.get("working-dir", ".")).resolve()
         (outdir / "symbols-report.json").write_text(json.dumps(problems, indent=1) + "\n")
@@ -311,7 +484,8 @@ def ProcessOptions(options, document):
             return None
         node = state["by_label"].get(entry["label"])
         url = getattr(node, "url", None) if node is not None else None
-        return url or (f"#{entry['label']}" if entry["label"] else None)
+        url = url or (f"#{entry['label']}" if entry["label"] else None)
+        return _at(url, entry["item"]) if url and entry.get("item") else url
 
     for cls in (M.MathEnvironment, M.math):
         prop = cls.__dict__.get("mathjax_source")
@@ -487,9 +661,11 @@ def ProcessOptions(options, document):
                                  "proof": n.userdata.get("symbols_proof"), "sha": n.userdata.get("symbols_sha"),
                                  "number": n.ref.textContent if getattr(n, "ref", None) is not None else None,
                                  "tex": body_tex(n.source or ""), "where": section_of(n), "contains": it.get("contains", []),
-                                 "planned": bool(it.get("planned"))})
+                                 "planned": bool(it.get("planned")), "anchors": it.get("anchors", []),
+                                 "term_items": it.get("term_items", {})})
         for key, e in state.get("table", {}).items():
-            out["symbols"].append({"sym": e["sym"], "type": e["type"], "label": e["label"], "lean": e.get("lean")})
+            out["symbols"].append({"sym": e["sym"], "type": e["type"], "label": e["label"], "lean": e.get("lean"),
+                                   "item": e.get("item")})
         outdir = Path(document.userdata.get("working-dir", ".")).resolve()
         (outdir / "blueprint-data.json").write_text(json.dumps(out, indent=1) + "\n")
 
