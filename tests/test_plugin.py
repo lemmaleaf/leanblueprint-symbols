@@ -318,3 +318,66 @@ def test_item_anchors_and_item_links(tmp_path):
     # the source keeps the reference as written (the card's text and hash do not change)
     assert r"\ref{def:a}(2)" in items["lem:b"]["tex"] and r"\ref{def:a}(see)" in items["lem:b"]["tex"]
     assert r"\itemref{def:a}{3}" in items["lem:b"]["tex"]
+
+
+STYLE_DOC = r"""\documentclass{report}
+\usepackage{amsmath, amsthm}
+\usepackage[thms=definition+lemma+theorem]{blueprint}
+\usepackage{symbols}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{lemma}[definition]{Lemma}
+\newtheorem{theorem}[definition]{Theorem}
+\begin{document}
+\chapter{First}\label{ch:first}
+The cards below, and Chapter~\ref{ch:second}, are free to say so: this is an introduction.
+\begin{definition}[constant]\label{def:a}\defines{a}{real number}
+  The \defterm{constant} is $a=1$. Each is a group.
+\end{definition}
+\begin{lemma}\label{lem:early}\uses{def:a}
+  $a>0$, by \ref{lem:late}; see also Chapter~\ref{ch:second}.
+
+  \textit{Status:} known.
+\end{lemma}
+\begin{proof}
+  See \href{https://example.org}{a book}.
+\end{proof}
+\begin{lemma}\label{lem:ok}\uses{def:a}
+  $a\ge0$.
+
+  \textit{Status:} known.
+  \textit{References:} \href{https://example.org/x}{a book}.
+\end{lemma}
+\begin{proof}
+  The constant is one, and one is at least zero, because every positive number is at least zero and one is positive.
+\end{proof}
+\chapter{Second}\label{ch:second}
+\begin{lemma}\label{lem:late}\uses{def:a}
+  $a<2$, proved in GRN/General/Box.lean as the next chapter shows. Proof: obvious.
+
+  \textit{Status:} folklore.
+\end{lemma}
+\end{document}
+"""
+
+
+@pytest.mark.slow
+def test_style_checks_on_a_built_page(tmp_path):
+    """The style checks through plasTeX (which joins a card's lines): a forward reference (to a card and to a chapter),
+    plan-of-the-book words, a project path, a Status outside the fixed list, a known result whose proof is only a
+    reference; advisories apart (symbols-advisories.json, blueprint-data.json), never in symbols-report.json. A chapter's
+    introduction is free, and the clean lemma passes."""
+    _build(tmp_path, STYLE_DOC)
+    rep = json.loads((tmp_path / "symbols-report.json").read_text())
+    got = {(p["kind"], p["label"]) for p in rep}
+    assert ("forward-ref", "lem:early") in got
+    assert sum(1 for p in rep if p["kind"] == "forward-ref" and p["label"] == "lem:early") == 2, rep   # the card, the chapter
+    assert {("chapter-mention", "lem:early"), ("chapter-mention", "lem:late"), ("project-path", "lem:late"),
+            ("tag-lines", "lem:late"), ("known-needs-why", "lem:early")} <= got, rep
+    assert not [p for p in rep if p["label"] in ("lem:ok", "proof of lem:ok", "def:a")], rep
+    assert all("severity" not in p for p in rep)
+    adv = json.loads((tmp_path / "symbols-advisories.json").read_text())
+    assert {(p["kind"], p["label"]) for p in adv} == {("proof-in-statement", "lem:late"), ("definition-states-fact", "def:a")}, adv
+    data = json.loads((tmp_path / "blueprint-data.json").read_text())
+    assert data["advisories"] == adv and data["kinds"]["forward-ref"]["severity"] == "problem"
+    assert data["kinds"]["long-card"]["severity"] == "advisory"

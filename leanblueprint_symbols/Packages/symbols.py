@@ -14,6 +14,12 @@ Commands (inside a definition, lemma, theorem, ... or proof):
                                                          implication edges a frontier is computed from (\uses says
                                                          what an item relies on, \contains what it generalizes)
 
+The style checks (core.style) read each card's text: a citation of a later card or section (forward-ref), the plan of
+the book in a card (chapter-mention), a project path (project-path), tag lines out of place or a Status outside the
+fixed list (tag-lines), a known result without a sketch (known-needs-why); and, as advisories (symbols-advisories.json
+and blueprint-data.json "advisories", never a problem, never stopped by strict): a proof inside a statement, a long
+card, a fact in a definition.
+
 After parsing, the checker (leanblueprint_symbols.core) reports undeclared, redeclared and untyped symbols, terms
 used before their definition, and explanatory phrases inside statements; a symbol declared inside a lemma or proof but used elsewhere, a letter
 bound in two roles (\binds{w \in \mathcal B}: a bound symbol may carry its type), a symbol used without a \uses
@@ -21,6 +27,7 @@ path to the item that declares it, a statement in numbered parts whose proof ski
 that does not introduce that name as a term in its text (\defterm). It writes, next to the output directory:
 
     symbols-report.json   the problems
+    symbols-advisories.json  the advisories (a second look; they never make a page not done)
     symbols.diagnose      a \defines line to complete for every undeclared symbol
     blueprint-data.json   items, symbols, dependency edges and status, for other applications
 
@@ -429,6 +436,36 @@ def ProcessOptions(options, document):
             if missing:
                 problems.append({"kind": "unnamed", "label": it["label"],
                                  "detail": f"its name ({', '.join(missing)}) is not introduced as a term (\\defterm) in its text"})
+        # the style checks (core.style): what each written card cites, and where it sits in the book
+        item_ids = {id(it["node"]): k for k, it in enumerate(items)}
+        place, seen_items = {}, 0
+        for nd in document.getElementsByTagName(tuple(envs) + ("part", "chapter", "section", "subsection", "subsubsection")):
+            if id(nd) in item_ids:
+                seen_items = item_ids[id(nd)] + 1
+            else:
+                place[id(nd)] = seen_items   # a section: the first card after its start
+        cites: dict[int, list] = {}
+        for r in document.getElementsByTagName(("ref", "itemref", "eqref", "cref", "Cref", "autoref", "pageref")):
+            target = (getattr(r, "idref", None) or {}).get("label")
+            owner = _owner(r.parentNode, item_ids)
+            if target is None or owner is None:
+                continue   # a reference in a chapter or section introduction is free
+            home = _owner(target, item_ids)
+            if home is not None:
+                at, item = item_ids[id(home)], items[item_ids[id(home)]]["label"]
+            elif id(target) in place:
+                at, item = place[id(target)], None
+            else:
+                continue
+            cites.setdefault(id(owner), []).append({"ref": getattr(target, "id", None) or "?", "item": item, "at": at})
+        try:
+            style = core.style([{"label": it["label"], "kind": it["kind"], "source": it["source"], "parent": it["parent"],
+                                 "pos": item_ids[id(it["node"])], "cites": cites.get(id(it["node"]), [])} for it in written])
+        except Exception as e:   # never break a build over the style checks; say they did not run
+            style = [{"kind": "style-error", "label": "the text", "detail": f"the style checks did not run: {e!r}",
+                      "severity": "problem"}]
+        problems += [{k: v for k, v in p.items() if k != "severity"} for p in style if p["severity"] == "problem"]
+        advisories = [p for p in style if p["severity"] == "advisory"]
         labels = {it["label"] for it in items}
         for it in items:   # a \contains naming no item, or the item itself
             for c in it.get("contains", []):
@@ -460,14 +497,18 @@ def ProcessOptions(options, document):
                 table.setdefault(core.key_of(sym), {"sym": sym, "type": ty, "label": it["label"],
                                                      "lean": it.get("leans", {}).get(sym),
                                                      "item": it.get("sym_items", {}).get(sym)})
-        state.update(items=items, problems=problems, table=table, by_label=by_label)
+        state.update(items=items, problems=problems, advisories=advisories, table=table, by_label=by_label)
         outdir = Path(document.userdata.get("working-dir", ".")).resolve()
         (outdir / "symbols-report.json").write_text(json.dumps(problems, indent=1) + "\n")
+        # advisories: a second look, never a problem (not in symbols-report.json, not stopped by strict)
+        (outdir / "symbols-advisories.json").write_text(json.dumps(advisories, indent=1) + "\n")
         diag = sorted({p["detail"].split(" in ")[0] for p in problems if p["kind"] == "undeclared"})
         (outdir / "symbols.diagnose").write_text("".join(f"\\defines{{{d}}}{{}}\n" for d in diag))
         for p in problems:
             log.warning(f"symbols: {p['kind']} in {p['label']}: {p['detail']}")
-        log.info(f"symbols: {len(table)} symbols declared, {len(problems)} problems")
+        for p in advisories:
+            log.info(f"symbols: advisory {p['kind']} in {p['label']}: {p['detail']}")
+        log.info(f"symbols: {len(table)} symbols declared, {len(problems)} problems, {len(advisories)} advisories")
         if strict and problems:
             raise SystemExit(f"symbols: {len(problems)} problems (strict); see symbols-report.json")
 
@@ -649,7 +690,9 @@ def ProcessOptions(options, document):
     # machine-readable output
     def export() -> None:
         items = state.get("items", [])
-        out = {"items": [], "symbols": [], "problems": state.get("problems", [])}
+        out = {"items": [], "symbols": [], "problems": state.get("problems", []), "advisories": state.get("advisories", []),
+               "kinds": {k: {"severity": "advisory" if k in core.ADVISORY else "problem", "means": v}
+                         for k, v in core.KINDS.items()}}
         for it in items:
             n = it["node"]
             uses = [u.id for u in n.userdata.get("uses", [])]

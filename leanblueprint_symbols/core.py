@@ -32,6 +32,24 @@ An *item* is one numbered unit (definition, lemma, theorem, proof, remark, ...) 
     remark-used  a remark that another item depends on (\\uses) or that a proof cites (\\ref): a claim a proof
                  relies on is a lemma, with a proof
 
+`style(items)` (the reading rules of a textbook made mechanical) returns findings with a "severity":
+
+    forward-ref       a card cites (\\ref, \\itemref) a card or a section that comes later; chapter and section
+                      introductions are free
+    chapter-mention   a card mentions the plan of the book: "Chapter 5", "Section 3", "later chapters", "the next
+                      chapter", "the cards below", "for now", "so far" (in a proof, "below" points inside the proof)
+    project-path      a card names a project file or path (GRN/..., tools/..., x.lean, x.py, x.md, x.json); Lean
+                      names belong in \\lean{} and the "In Lean:" tag line, link targets are not read
+    tag-lines         \\textit{Status:}, \\textit{In Lean:}, \\textit{References:} only as tag lines at the end of
+                      a statement (not inside a sentence, a list or a proof, no text after them, each once); a Status
+                      is one of STATUS_VALUES
+    known-needs-why   a statement whose Status is "known" has no proof block, or one that is only a reference
+    advisory: proof-in-statement ("Proof:", "Why it is true", a QED mark in a statement), long-card (more than four
+    top-level items; a notation card with more than six or more than one \\textbf topic), definition-states-fact (a
+    sentence of a definition without its defined term that starts "Each ... is", "It is", "Every ... is", ...)
+
+KINDS holds a sentence for each kind, for a reader of a report.
+
 Optional fields for these: "source" (the item's TeX, for ref-after-term and remark-used) and "names" (the things
 the item's title names, for unnumbered).
 
@@ -460,3 +478,307 @@ def _check(items: list[dict]) -> list[dict]:
                 if m:
                     problems.append({"kind": "gloss", "label": label, "detail": m.group(0)})
     return problems
+
+
+# ---- style checks: the book's reading rules made mechanical (user, 2026-11-15: "rules must be enforced mechanically, not by
+# instructions to models, because prompt rules drift"). Each finding carries a severity: "problem" (the page is not done;
+# symbols-report.json, the strict option) or "advisory" (a second look; reported apart, never blocks).
+
+STATUS_VALUES = ("known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open")
+TAGS = ("Status", "In Lean", "References")
+ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact"}
+# what each kind means, in words a reader of a report can act on (exported with the data: blueprint-data.json "kinds")
+KINDS = {
+    "undeclared": "a symbol is used before any card declares it (\\defines) and is not bound here (\\binds)",
+    "redeclared": "a symbol is declared a second time: one meaning per symbol",
+    "untyped": "a declaration has no type",
+    "undeclarable": "an operator or a delimiter is declared as a symbol",
+    "term-before": "a term is used before the card that defines it",
+    "gloss": "an explanatory phrase (\"i.e.\", \"so that\", \"note that\") inside a statement",
+    "local-def": "a symbol declared inside a lemma, theorem, remark or proof is used by another card: give it a definition",
+    "two-roles": "a letter is bound with two different types in cards that depend on each other",
+    "uses": "a symbol is used without a \\uses path to the card that declares it",
+    "proof-parts": "a statement in numbered parts has a proof that skips a part",
+    "ref-after-term": "\"(Definition~\\ref{...})\" right after a term that is already a link to it",
+    "unnumbered": "a definition of several things is not a numbered list",
+    "remark-used": "a remark that a proof relies on: make it a lemma with a proof",
+    "unnamed": "a named definition does not introduce its name as a term (\\defterm)",
+    "contains": "a \\contains names no card",
+    "itemref": "a reference to an item the card does not have",
+    "forward-ref": "a card cites a card or a section that comes later in the book: cards build on what comes before",
+    "chapter-mention": "a card mentions the plan of the book (\"Chapter 5\", \"below\", \"later chapters\"): signposts go in "
+                       "chapter and section introductions",
+    "project-path": "a card names a project file or path (tools/..., x.lean, x.md): cards hold mathematics only; Lean "
+                    "names go in \\lean{} and the \"In Lean:\" tag line",
+    "tag-lines": "Status, In Lean and References are tag lines at the end of the statement (\\textit{Status:} ...), with a "
+                 "Status from the fixed list, never words of its sentences",
+    "known-needs-why": "a result with status known needs a proof block with a sketch of why it is true, not only a reference",
+    "proof-in-statement": "advisory: a proof or a sketch seems to sit inside the statement; it goes in the proof block",
+    "long-card": "advisory: a long card (more than four items; a notation card with more than six items or more than "
+                 "one topic): consider splitting it",
+    "definition-states-fact": "advisory: a definition seems to state a fact; facts go in a lemma, where they are proved",
+}
+
+
+def _braced(s: str, i: int) -> int:
+    """The end (one past the closing brace) of the {group} starting at s[i] == '{'."""
+    depth = 0
+    for j in range(i, len(s)):
+        depth += {"{": 1, "}": -1}.get(s[j], 0) if (j == 0 or s[j - 1] != "\\") else 0
+        if depth == 0:
+            return j + 1
+    return len(s)
+
+
+def _commands(s: str, names, keep_arg=None) -> str:
+    r"""`s` with each \name[opt]{arg}... removed (all its braced arguments); with keep_arg=k, its k-th argument (0-based)
+    stays in place of the command. Newlines inside a removed command are kept, so line numbers stay."""
+    pat = re.compile(r"\\(" + "|".join(re.escape(n) for n in names) + r")(?![A-Za-z])")
+    out, i = [], 0
+    while True:
+        m = pat.search(s, i)
+        if not m:
+            out.append(s[i:])
+            return "".join(out)
+        out.append(s[i:m.start()])
+        j = m.end()
+        args = []
+        while True:
+            k = j
+            while k < len(s) and s[k] in " \t":
+                k += 1
+            if k < len(s) and s[k] == "[" and not args:
+                e = s.find("]", k)
+                j = e + 1 if e >= 0 else len(s)
+                continue
+            if k < len(s) and s[k] == "{":
+                e = _braced(s, k)
+                args.append(s[k + 1:e - 1])
+                j = e
+                continue
+            break
+        gone = s[m.start():j]
+        kept = args[keep_arg] if keep_arg is not None and len(args) > keep_arg else ""
+        out.append(kept + "\n" * (gone.count("\n") - kept.count("\n")))
+        i = j
+
+
+META_CMDS = ("label", "uses", "lean", "leanok", "notready", "mathlibok", "discussion", "proves", "defines", "binds",
+             "contains", "planned")
+MATH_RE = re.compile(r"\$\$.*?\$\$|\$(?:\\.|[^$\\])*\$|\\\(.*?\\\)|\\\[.*?\\\]|"
+                     r"\\begin\{(equation|align|gather|multline|eqnarray)(\*?)\}.*?\\end\{\1\2\}", re.S)
+
+
+def _body(src: str) -> str:
+    r"""A card's TeX without its environment lines, comments and metadata (\label, \uses, \defines, ...); \defterm{x} is x."""
+    src = re.sub(r"(?<!\\)%[^\n]*", "", src)
+    src = re.sub(r"^\s*\\begin\{[^}]*\}(\[[^\]\n]*(?:\[[^\]\n]*\][^\]\n]*)*\])?", "", src)
+    src = re.sub(r"\\end\{[^}]*\}\s*$", "", src)
+    src = _commands(src, META_CMDS)
+    return _commands(src, ("defterm",), keep_arg=0)
+
+
+def _no_math(tex: str, mark: str = " MATH ") -> str:
+    """Formulas replaced by a mark (their newlines kept)."""
+    return MATH_RE.sub(lambda m: mark + "\n" * m.group(0).count("\n"), tex)
+
+
+TAG = re.compile(r"\\textit\s*\{\s*([A-Z][A-Za-z ]{0,30}?)\s*:\s*\}")
+
+
+def _tag_split(body: str) -> tuple[str, list[tuple[str, str]], list[str]]:
+    """A statement's text before its tag lines, the tag lines ((name, value)), and complaints about their place. A tag
+    line starts with \\textit{Name:}; the tag lines run from the first one to the end of the statement, each value up to
+    the next tag. (plasTeX joins a card's lines, keeping only paragraph breaks, so a tag is found by its command, not by
+    its line.) Complaints: a tag that sits inside a sentence, and text after the tag lines."""
+    tags_at = list(TAG.finditer(body))
+    if not tags_at:
+        return body, [], []
+    head = body[:tags_at[0].start()]
+    bad = []
+    before = head.rstrip()
+    if before and not re.search(r"(?:[.!?)]|\\\]|\\end\{[^}]*\}|\$\$|\n\s*\n)\s*$", head):
+        bad.append(f"\"{tags_at[0].group(1)}:\" inside a sentence (\"...{_clean_words(before)[-40:]}\")")
+    tags = []
+    for a, b in zip(tags_at, tags_at[1:] + [None]):
+        val = body[a.end():b.start() if b else len(body)]
+        parts = re.split(r"\n\s*\n", val, maxsplit=1)
+        tail = parts[1].strip() if len(parts) > 1 else ""
+        m = re.search(r"\\(?:end|begin)\s*\{|\\item\b", parts[0])
+        if m:
+            tail = (parts[0][m.start():] + " " + tail).strip()
+            parts[0] = parts[0][:m.start()]
+        tags.append((a.group(1), parts[0].strip()))
+        if tail:
+            bad.append(f"text after the tag lines (\"{_clean_words(tail)[:60]}\")")
+    return head, tags, bad
+
+
+def _clean_words(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+CHAPTER_PATTERNS = [
+    r"\b(?:chapters?|sections?)\s*~?\s*(?:\d|\\ref\b|[IVX]+\b)",
+    r"§\s*\d",
+    r"\b(?:later|earlier|previous|preceding|next|following|coming|remaining|subsequent|last|final|other) "
+    r"(?:chapters?|sections?|cards?)\b",
+    r"\b(?:this|that|the present|the next|the previous) (?:chapter|section)\b",
+    r"\bthe rest of (?:the|this) (?:book|chapter|section)\b",
+    r"\b(?:see|shown|proved|proven|defined|discussed|treated|explained|introduced|stated|made precise|return(?:s|ed)?|"
+    r"come back|comes|used|needed) later\b",
+    r"\blater in (?:the|this) (?:book|chapter|section)\b",
+    r"\b(?:the|this) book will\b",
+    r"\bfor now\b", r"\bso far\b",
+]
+# "below" as a signpost to later cards ("the cards below", "the lattice measure below"), not "bounded below", "$P_j$ below
+# $V_j$", "far below the threshold", nor a pointer inside the card ("the conditions below:"); not read in a proof, where
+# "below" points inside the proof
+BELOW_PATTERNS = [
+    r"(?<!bounded )(?<!from )(?<!far )(?<!stays )(?<!stay )(?<!remains )(?<!lies )(?<!lie )(?<!falls )(?<!drops )"
+    r"(?<!goes )(?<!just )(?<!strictly )(?<!MATH )(?<!is )(?<!are )(?<!be )\bbelow\b"
+    r"(?!\s*(?:MATH|the\b|a\b|an\b|its\b|their\b|\d|zero\b|one\b|threshold|level|that\b|which\b|:|hold))",
+]
+CHAPTER_RE = re.compile("|".join(f"(?:{p})" for p in CHAPTER_PATTERNS), re.I)
+BELOW_RE = re.compile("|".join(f"(?:{p})" for p in BELOW_PATTERNS), re.I)
+BELOW_INSIDE = re.compile(r"\b(?:conditions?|properties|property|cases?|formulas?|equations?|list|items?|parts?|steps?) below$",
+                          re.I)
+PROJECT_DIRS = ("GRN", "tools", "texts", "docs", "specs", "prover", "runs", "biolean", "tests", "Proofs", "src", "scripts",
+                "third_party")
+PROJECT_RE = re.compile(
+    r"(?<![\w.:/-])(?:[\w-]+/)*[\w-]+\.(?:lean|py|md|json|tex|sh|js|mjs|ts|toml|ya?ml|txt|csv|ipynb|jinja2s?|html|css)\b"
+    r"|(?<![\w.:/-])(?:" + "|".join(PROJECT_DIRS) + r")/")
+PROOF_IN_STATEMENT = re.compile(r"(?:^|(?<=[.:;]\s)|(?<=\())(?:Proof|Proof sketch|Sketch)\b|\b[Ww]hy it is true\b|"
+                                r"\b[Ss]ketch of (?:the|a) proof\b|\\qed\b|\\qedhere\b|\\blacksquare\b|∎|"
+                                r"\\(?:Box|square)\s*\$?\s*$", re.M)
+FACT_RE = re.compile(r"^(?:each|every|all|both|it|they|these|this|the (?:two|three|four)(?= ))\b[^.;]*?\b(?:is|are|has|have|forms?|"
+                     r"satisf(?:y|ies)|contains?)\b", re.I)
+
+
+def _sentences(s: str) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.;:])\s+(?=[A-Z$\\])", s) if x.strip()]
+
+
+def _top_items(body: str) -> int:
+    """The number of \\item lines at the first level of a card's lists (itemize, enumerate, description)."""
+    depth, n = 0, 0
+    for m in re.finditer(r"\\(begin|end)\{(?:enumerate|itemize|description)\}|\\item\b", body):
+        if m.group(1) == "begin":
+            depth += 1
+        elif m.group(1) == "end":
+            depth -= 1
+        elif depth == 1:
+            n += 1
+    return n
+
+
+def _ref_only(proof_prose: str) -> bool:
+    """A proof that is only a pointer: no formula, and under a dozen words once links and references are taken out
+    ("See Glimm and Jaffe, Theorem 3."). A short computation ("By (3), $U'=\\omega U\\omega^{-1}$, and the trace ...")
+    is a proof."""
+    t = _commands(proof_prose, ("href",), keep_arg=None)
+    t = _commands(t, ("cite", "ref", "itemref", "eqref", "cref", "Cref", "url"))
+    if re.search(r"\bMATH\b", t):
+        return False
+    return len(re.findall(r"[A-Za-z]{2,}", t)) < 12
+
+
+def style(items: list[dict]) -> list[dict]:
+    """The style checks (forward-ref, chapter-mention, project-path, tag-lines, known-needs-why; advisory:
+    proof-in-statement, long-card, definition-states-fact). Each item needs "label", "kind", "source", and for a proof
+    "parent"; optionally "pos" (its place in the book, default its index in `items`) and "cites": what its references
+    point at, [{"ref": label as written, "item": label of the card it lies in, "at": that card's place}] (a reference
+    to a section: the place of the first card after its start). Without "cites", the \\ref and \\itemref labels in the source that name items are used. Findings carry
+    "severity"."""
+    out = []
+    pos = {it["label"]: k for k, it in enumerate(items)}
+    proofs = {it.get("parent"): it for it in items if it.get("kind") == "proof" and it.get("parent")}
+
+    def add(kind, label, detail):
+        out.append({"kind": kind, "label": label, "detail": detail,
+                    "severity": "advisory" if kind in ADVISORY else "problem"})
+
+    for k0, it in enumerate(items):
+        k = it.get("pos", k0)
+        label, kind = it["label"], it.get("kind")
+        body = _body(it.get("source") or "")
+        head, tags, misplaced = _tag_split(body)
+        is_proof = kind == "proof"
+        # forward-ref: what the card cites comes before it (a proof: before it, its own statement excepted)
+        cites = it.get("cites")
+        if cites is None:
+            cites = [{"ref": r, "item": r, "at": items[pos[r]].get("pos", pos[r])} for r in
+                     re.findall(r"\\(?:ref|itemref|eqref|cref|Cref|autoref)\s*\{([^}]+)\}", it.get("source") or "") if r in pos]
+        seen = set()
+        for c in cites:
+            if c.get("at") is None or c["at"] <= k or (c.get("item") is not None and c["item"] in (label, it.get("parent"))) \
+                    or c["ref"] in seen:
+                continue
+            seen.add(c["ref"])
+            add("forward-ref", label, f"cites {c['ref']}, which comes later in the book"
+                                      + ("" if c.get("item") else " (a chapter or section)"))
+        # card text: the prose without formulas, links' targets, and the tag lines
+        prose = _no_math(head)
+        prose_nolinks = _commands(prose, ("href",), keep_arg=None)
+        prose_nolinks = _commands(prose_nolinks, ("url",))
+        hits = [m.group(0) for m in CHAPTER_RE.finditer(prose_nolinks)]
+        if not is_proof:
+            hits += [m.group(0) for m in BELOW_RE.finditer(prose_nolinks)
+                     if not BELOW_INSIDE.search(prose_nolinks[max(0, m.start() - 40):m.end()])]
+        for h in hits:
+            add("chapter-mention", label, f"\"{_clean_words(h)}\": the plan of the book goes in a chapter or "
+                                          "section introduction, not in a card")
+        prose_paths = _commands(_commands(_no_math(head), ("href",), keep_arg=1), ("url",))
+        for m in PROJECT_RE.finditer(prose_paths + "\n" + "\n".join(v for n, v in tags if n != "In Lean")):
+            add("project-path", label, f"\"{m.group(0)}\": a card names no project file or path")
+        # tag lines: only at the end of a statement, Status from the fixed list
+        names = [n for n, _ in tags]
+        for n, v in tags:
+            if n == "Status":
+                val = re.sub(r"\s*\.\s*$", "", _clean_words(v))
+                if val not in STATUS_VALUES:
+                    add("tag-lines", label, f"Status \"{val}\" is not one of: " + "; ".join(STATUS_VALUES))
+            if is_proof and n in TAGS:
+                add("tag-lines", label, f"\"{n}:\" in a proof: tag lines end the statement")
+        for n in TAGS:
+            if names.count(n) > 1:
+                add("tag-lines", label, f"two \"{n}:\" tag lines")
+        for b in misplaced if any(n in TAGS for n in names) else []:
+            add("tag-lines", label, f"{b}: tag lines end the statement, each on a line of its own")
+        for m in re.finditer(r"\\textit\{\s*(" + "|".join(TAGS) + r")\s*:\s*\}|\b(Status|In Lean|References)\s*:",
+                             _commands(prose, ("href",))):
+            add("tag-lines", label, f"\"{m.group(1) or m.group(2)}:\" inside the text: it is a tag line of its own, at the "
+                                    "end of the statement")
+        status = next((re.sub(r"\s*\.\s*$", "", _clean_words(v)) for n, v in tags if n == "Status"), None)
+        if status == "known" and not is_proof:
+            pr = proofs.get(label)
+            if pr is None:
+                add("known-needs-why", label, "status known and no proof block: add a short sketch of why it is true")
+            elif _ref_only(_no_math(_body(pr.get("source") or ""))):
+                add("known-needs-why", label, "status known and the proof block is only a reference: add a short sketch "
+                                              "of why it is true")
+        # advisory
+        if not is_proof:
+            m = PROOF_IN_STATEMENT.search(_commands(prose, ("href",)))
+            if m:
+                add("proof-in-statement", label, f"\"{_clean_words(m.group(0))}\" in the statement: a proof or a sketch goes "
+                                                 "in the proof block")
+            n_items = _top_items(body)
+            heads = len(re.findall(r"\\textbf\s*\{", head))
+            if kind == "notation" and (n_items > 6 or heads > 1):
+                add("long-card", label, f"a notation card with {n_items} items and {heads} topic headings: one topic per "
+                                        "notation card, just before its first use")
+            elif kind != "notation" and n_items > 4:
+                add("long-card", label, f"{n_items} items: consider splitting the card")
+        if kind == "definition":   # a sentence with the defined term in it defines; the others are read for facts
+            marked = re.sub(r"\\defterm\s*\{", r"\\defterm{DEFTERM ", it.get("source") or "")
+            flat = _commands(_no_math(_tag_split(_body(marked))[0]), ("href",))
+            flat = re.sub(r"\\item\b", "\n\n", flat)
+            for para in re.split(r"\n\s*\n", flat):
+                for s in _sentences(_clean_words(para)):
+                    if re.match(r"(?:examples?|for example|for instance)\b", s, re.I):
+                        continue
+                    if "DEFTERM" not in s and FACT_RE.match(s) and not re.search(r"\b(?:called|call|write|written|denote[sd]?|stands? for|means|"
+                                                          r"let|is said|we say|defined)\b", s, re.I):
+                        add("definition-states-fact", label, f"\"{s[:80]}\": a fact in a definition; state it in a lemma")
+    return out

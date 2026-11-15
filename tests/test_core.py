@@ -256,3 +256,111 @@ def test_a_title_with_a_formula_matches_its_term():
     assert name_key(r"\(\mathbb R\)-valued map") == name_key("R-valued map")
     assert name_key("The  Cartesian product") == "cartesian product"
     assert name_key("parallel vectors") != name_key("parallel")
+
+
+# ---- style checks (core.style): the reading rules of the book made mechanical (2026-11-15), one planted defect each,
+# and the correct text beside it passes
+
+from leanblueprint_symbols.core import style  # noqa: E402
+
+
+def card(label, kind, body, parent=None, env=None):
+    env = env or kind
+    return {"label": label, "kind": kind, "parent": parent,
+            "source": f"\\begin{{{env}}}\\label{{{label}}}\n{body}\n\\end{{{env}}}" if kind != "proof"
+            else f"\\begin{{proof}}\n{body}\n\\end{{proof}}"}
+
+
+def found(items, kind=None):
+    return sorted((p["kind"], p["label"]) for p in style(items) if kind is None or p["kind"] == kind)
+
+
+def test_forward_reference_is_a_problem():
+    a = card("lem:a", "lemma", r"$x>0$, by \ref{lem:b}.")
+    b = card("lem:b", "lemma", r"$x\ge0$.")
+    assert found([a, b], "forward-ref") == [("forward-ref", "lem:a")]
+    assert found([b, a], "forward-ref") == []                         # cited after it comes: fine
+    pa = card("proof of lem:b", "proof", r"By \ref{lem:b}(2) and \ref{lem:a}.", parent="lem:b")
+    assert found([b, pa, a], "forward-ref") == [("forward-ref", "proof of lem:b")]   # its own statement is fine
+    # the front end's resolution: a reference to a later section (no card), "at" its first card
+    c = dict(card("lem:c", "lemma", r"See \ref{sec:x}."), cites=[{"ref": "sec:x", "item": None, "at": 3}])
+    assert found([c], "forward-ref") == [("forward-ref", "lem:c")]
+    assert style([c])[0]["severity"] == "problem"
+
+
+def test_plan_of_the_book_in_a_card():
+    for words in ("as Chapter 5 shows", "until Chapter~\\ref{ch:x}", "in later chapters", "the next chapter",
+                  "the cards below make this precise", "see below.", "Section 3 explains", "is defined later",
+                  "for now", "the remaining chapters lead to it", "proved so far"):
+        assert found([card("lem:a", "lemma", f"$x>0$; {words}")], "chapter-mention") == [("chapter-mention", "lem:a")], words
+    for words in ("$f$ is bounded below", "it keeps $P_j$ below $V_j$", "far below the threshold", "part 2 of the lemma",
+                  "by (2), $x$ lies below $y$", "the level stays below one"):
+        assert found([card("lem:a", "lemma", f"$x>0$, and {words}.")], "chapter-mention") == [], words
+    for words in ("a box is admissible when the conditions below hold", "the two cases below: one, two"):
+        assert found([card("def:a", "definition", f"$x>0$; {words}.")], "chapter-mention") == [], words
+    # in a proof "below" and "we will" point inside the proof; the plan of the book is still caught there
+    pr = card("proof of lem:a", "proof", r"We will show (3) below, and the bound below gives $x>0$.", parent="lem:a")
+    assert found([card("lem:a", "lemma", "$x>0$."), pr], "chapter-mention") == []
+    pr = card("proof of lem:a", "proof", r"As in Chapter~\ref{ch:x}.", parent="lem:a")
+    assert found([card("lem:a", "lemma", "$x>0$."), pr], "chapter-mention") == [("chapter-mention", "proof of lem:a")]
+    # a reference's own words ("Glimm-Jaffe, Chapter 6") are a tag line, not the card's text
+    ok = card("lem:a", "lemma", "$x>0$.\n\n\\textit{Status:} known.\n\\textit{References:} \\href{https://x.org}{Glimm--Jaffe, Chapter 6}.")
+    assert found([ok, card("proof of lem:a", "proof", "Because " + "the numbers are positive and add up " * 3, "lem:a")]) == []
+
+
+def test_project_paths_in_a_card():
+    for words in ("proved in GRN/General/Box.lean", "see tools/visit.py", "as docs/MODEL.md says", "from RC1.md",
+                  "the file status.json"):
+        assert found([card("def:a", "definition", f"An $x$ is ... ({words}).")], "project-path") == [("project-path", "def:a")], words
+    ok = (r"An $x$ is positive. \href{https://en.wikipedia.org/wiki/Index.html}{Index}." "\n\n"
+          r"\textit{In Lean:} \texttt{GRN.General.box} in GRN/General/Box.lean.")
+    assert found([card("def:a", "definition", r"\lean{GRN.box}" + ok)], "project-path") == []
+
+
+def test_tag_lines():
+    good = "\n\n".join([r"$x>0$.", r"\textit{Status:} proved and rechecked in this project.",
+                        r"\textit{In Lean:} \texttt{X.y}.", r"\textit{References:} \href{https://x.org}{a paper}."])
+    assert found([card("thm:a", "theorem", good)], "tag-lines") == []
+    joined = r"$x>0$. \textit{Status:} claimed elsewhere, not checked here. \textit{References:} \href{https://x.org}{x}."
+    assert found([card("thm:a", "theorem", joined)], "tag-lines") == []    # plasTeX joins the lines: still tag lines
+    for bad in (r"$x>0$. \textit{Status:} folklore.",                                    # not in the list
+                r"$x>0$ (\textit{Status:} known) for every $x$.",                         # inside a sentence
+                r"$x>0$. Status: known (elementary). More text.",                         # a sentence, no tag
+                "\\textit{Status:} known.\n\nAnd then more of the statement.",            # text after the tag lines
+                "\\begin{enumerate}\\item $x>0$. \\textit{Status:} open.\\end{enumerate}",   # inside a list
+                "$x>0$.\n\n\\textit{Status:} open.\n\\textit{Status:} known."):           # twice
+        assert set(found([card("thm:a", "theorem", bad)], "tag-lines")) == {("tag-lines", "thm:a")}, bad
+    pr = card("proof of thm:a", "proof", r"Easy. \textit{Status:} known.", parent="thm:a")
+    assert ("tag-lines", "proof of thm:a") in found([card("thm:a", "theorem", "$x>0$."), pr])
+
+
+def test_known_needs_a_why():
+    st = card("thm:a", "theorem", "$x>0$.\n\n\\textit{Status:} known.")
+    assert found([st], "known-needs-why") == [("known-needs-why", "thm:a")]
+    ref_only = card("proof of thm:a", "proof", r"See \href{https://x.org/abs/1}{Glimm and Jaffe}, Theorem 3.", parent="thm:a")
+    assert found([st, ref_only], "known-needs-why") == [("known-needs-why", "thm:a")]
+    short = card("proof of thm:a", "proof", r"By \ref{lem:b}(3), $U'=wUw^{-1}$, and $\operatorname{tr}(MUM^{-1})=\operatorname{tr}U$.",
+                 parent="thm:a")
+    assert found([st, short], "known-needs-why") == []                 # a short computation is a proof
+    why = card("proof of thm:a", "proof", r"Why it is true (a sketch): $x$ is a square of a nonzero number, and a square "
+               r"of a nonzero real number is positive, since the product of two numbers of the same sign is positive.",
+               parent="thm:a")
+    assert found([st, why], "known-needs-why") == []
+    assert found([card("thm:a", "theorem", "$x>0$.\n\n\\textit{Status:} open.")], "known-needs-why") == []
+
+
+def test_advisories():
+    p = style([card("lem:a", "lemma", r"$x>0$. Proof: obvious.")])
+    assert [(x["kind"], x["severity"]) for x in p] == [("proof-in-statement", "advisory")]
+    assert found([card("lem:a", "lemma", r"$x>0$. From the proof of the lemma before, $y>0$.")]) == []
+    five = "\\begin{enumerate}" + "".join(f"\\item ${k}>0$." for k in range(5)) + "\\end{enumerate}"
+    assert found([card("lem:a", "lemma", five)]) == [("long-card", "lem:a")]
+    assert found([card("lem:a", "lemma", five.replace("\\item $4>0$.", ""))]) == []
+    nested = "\\begin{enumerate}\\item a \\begin{enumerate}" + "\\item b" * 6 + "\\end{enumerate}\\item c\\end{enumerate}"
+    assert found([card("lem:a", "lemma", nested)]) == []                          # items of a nested list are not counted
+    topics = "\\textbf{Sets.} \\begin{itemize}\\item $X$\\end{itemize} \\textbf{Maps.} \\begin{itemize}\\item $f$\\end{itemize}"
+    assert found([card("not:a", "notation", topics)]) == [("long-card", "not:a")]
+    assert found([card("def:g", "definition", r"A \defterm{group} is a set $G$ with a product. Each is a group. "
+                       r"Example: the integers are a group.")]) == [("definition-states-fact", "def:g")]
+    assert found([card("def:g", "definition", r"A \defterm{group} is a set $G$ with a product. It is called abelian "
+                       r"when the product commutes.")]) == []

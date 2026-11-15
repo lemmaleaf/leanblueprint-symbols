@@ -25,6 +25,19 @@ plugin works one level down, on the symbols inside formulas:
   marked `\planned` is a placeholder whose text is a plan: the checks skip it, it has no Approve button, and its heading
   says "planned". `symbols.diagnose` lists a `\defines` line to
   complete for each undeclared symbol; the `strict` option stops the build on any problem.
+* **Style checks** (the reading rules of a textbook made mechanical). Problems: a card that cites (`\ref`,
+  `\itemref`) a card or a section that comes later in the book (`forward-ref`; chapter and section introductions are
+  free); the plan of the book inside a card, "Chapter 5", "Section 3", "later chapters", "the next chapter", "the cards
+  below", "for now", "so far" (`chapter-mention`); a project file or path, `tools/x.py`, `GRN/`, `Box.lean`, `RC1.md`
+  (`project-path`; link targets, `\lean{}` and the "In Lean:" tag line are not read); `\textit{Status:}`,
+  `\textit{In Lean:}` and `\textit{References:}` anywhere but as tag lines at the end of a statement, or a Status that is
+  not one of "known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open"
+  (`tag-lines`); a statement with Status "known" whose proof block is missing or only a reference (`known-needs-why`).
+  **Advisories**, a second look that never makes a page not done (not in `symbols-report.json`, not stopped by
+  `strict`; written to `symbols-advisories.json` and `blueprint-data.json` "advisories"): a proof or a sketch inside a
+  statement (`proof-in-statement`), a card with more than four top-level items or a notation card with more than six or
+  more than one topic heading (`long-card`), a sentence of a definition that states a fact, "Each is a group"
+  (`definition-states-fact`). `blueprint-data.json` "kinds" gives each kind's severity and what it means.
 * **Linked terms.** Every page carries its defined terms (`window.symbolsTerms`); the first use of a term in each other card
   links to the card that defines it, with the same preview as a symbol (after MathJax, so TeX source is never touched).
 * **Item-level links.** Each item of a labelled card's numbered lists (`enumerate`) has an anchor: `<label>--item-<n>`,
@@ -58,7 +71,8 @@ plugin works one level down, on the symbols inside formulas:
   page gets the same theme.
 * **Machine-readable output.** `blueprint-data.json` holds the items, their dependencies, Lean names, symbols and
   status, each item's chapter and section, its text and a hash of what the reader sees (statement and proof, without
-  metadata) for other applications; `symbols-report.json` holds the checker's problems.
+  metadata) for other applications, and the advisories and the meaning of each kind; `symbols-report.json` holds the
+  checker's problems, `symbols-advisories.json` its advisories.
 
 ## Use
 
@@ -84,7 +98,7 @@ plastex --plugins leanblueprint leanblueprint_symbols -- web.tex
 
 | option | effect |
 |---|---|
-| `strict` | stop the build when the checker reports a problem |
+| `strict` | stop the build when the checker reports a problem (advisories never stop it) |
 | `lazymath=URL` | typeset formulas only as they come into view (MathJax 3.2's `ui/lazy`, loaded from `URL/ui/lazy.js`), with MathJax's menu and hidden MathML copy off: a page of ~1300 formulas settled in ~6 s instead of ~18 s on a phone-speed CPU |
 | `status=FILE` | JSON `{lean name: status}` or `{lean name: {"status": ..., "url": ...}}`; status is `verified`, `stated`, `sorry-free` or `missing` |
 | `reader` | the reader theme (reader.css, reader.js), also on the dependency graph page |
