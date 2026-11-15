@@ -65,7 +65,7 @@ plugin works one level down, on the symbols inside formulas:
 ```
 
 ```sh
-pip install git+https://github.com/javadnoorb/leanblueprint-symbols
+pip install git+https://github.com/lemmaleaf/leanblueprint-symbols
 plastex --plugins leanblueprint leanblueprint_symbols -- web.tex
 ```
 
