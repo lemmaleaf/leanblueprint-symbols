@@ -616,14 +616,22 @@ def ProcessOptions(options, document):
     # a hash of each card's source (with its proof), for approvals bound to what was read
     approve = "approve" in options
 
-    def card_sha(node) -> str:
-        r"""A hash of what the reader sees: the item's text and its proof's, without labels, \uses, \lean and other
-        metadata (a metadata edit is not a change of the card)."""
-        src = body_tex(node.source or "")
+    def seen_tex(node) -> str:
+        r"""What a card's hash covers (2026-11-16: everything the reader can see): its kind, its source with the title, the
+        statement, every \defines with its type and Lean name, \defterm, \binds and the tag lines (\lean, \leanok, ...),
+        and its proof's source the same way. Only \label and \uses are left out: they are invisible bookkeeping, so a card
+        whose only change is one of them keeps its hash. (plasTeX's source has no comments and squeezes spaces: a comment
+        is not part of what the reader sees; a host that wants every byte hashed covers comments itself.)"""
+        kind = getattr(node, "thmName", None) or getattr(node, "tagName", "")
+        src = f"{kind}\n{invisible_out(node.source or '')}"
         proof = node.userdata.get("proved_by")
         if proof is not None:
-            src += "\n" + body_tex(proof.source or "")
-        return hashlib.sha256(src.encode()).hexdigest()[:16]
+            src += "\n" + invisible_out(proof.source or "")
+        return src
+
+    def card_sha(node) -> str:
+        """A hash of what the reader sees (seen_tex)."""
+        return hashlib.sha256(seen_tex(node).encode()).hexdigest()[:16]
 
     def apply_shas():
         for node in document.getElementsByTagName(tuple(e for e in envs if e != "proof")):
@@ -645,6 +653,26 @@ def ProcessOptions(options, document):
     # an item's text for other applications: its TeX without the environment and the metadata commands
     META = ("label", "uses", "lean", "leanok", "notready", "proves", "mathlibok", "discussion", "defines", "binds",
             "contains", "planned")
+
+    def invisible_out(src: str) -> str:
+        r"""The source without its \label{...} and \uses{...} commands (with their arguments), blank-line runs squeezed."""
+        out, i = [], 0
+        while i < len(src):
+            m = re.match(r"\\(label|uses)\s*\{", src[i:])
+            if m and (i == 0 or src[i - 1] != "\\"):
+                j, depth = i + m.end() - 1, 0
+                while j < len(src):
+                    depth += {"{": 1, "}": -1}.get(src[j], 0)
+                    j += 1
+                    if depth == 0:
+                        break
+                while j < len(src) and src[j] in " \t":
+                    j += 1
+                i = j
+                continue
+            out.append(src[i])
+            i += 1
+        return re.sub(r"[ \t]+\n", "\n", re.sub(r"\n\s*\n\s*", "\n\n", "".join(out))).strip()
 
     def body_tex(src: str) -> str:
         src = re.sub(r"^\\begin\{[^}]*\}(\[[^\]]*\])?", "", src.strip())
@@ -702,6 +730,7 @@ def ProcessOptions(options, document):
                                  "defines": [s for s, _ in it["defines"]], "terms": it["terms"],
                                  "status": state["node_status"](n) if "node_status" in state else None,
                                  "proof": n.userdata.get("symbols_proof"), "sha": n.userdata.get("symbols_sha"),
+                                 "seen": seen_tex(n) if n.userdata.get("symbols_sha") else None,
                                  "number": n.ref.textContent if getattr(n, "ref", None) is not None else None,
                                  "tex": body_tex(n.source or ""), "where": section_of(n), "contains": it.get("contains", []),
                                  "planned": bool(it.get("planned")), "anchors": it.get("anchors", []),

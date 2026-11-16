@@ -61,17 +61,19 @@ plugin works one level down, on the symbols inside formulas:
   Lean" (each Lean declaration it names is verified, by the status file, or `\leanok` without one), "proof on
   paper" (a proof follows it in the text) or "no proof yet". A `conjecture` environment is an item too; its chip says
   "open". The labels Theorem, Lemma, ... say how much a result matters; the chip says whether it is proved.
-* **Approvals** (option `approve`): an Approve button at the foot of each labelled card, bound to a hash of the
-  card's source (its proof included), so a card edited after its approval shows "changed since you approved it".
+* **Approvals** (option `approve`): an Approve button at the foot of each labelled card, bound to a hash of
+  everything the reader sees of the card: its kind, title, statement, each `\defines` with its type and Lean name,
+  `\defterm`, `\binds`, the tag lines (`\lean`, `\leanok`, ...) and its proof. Only `\label` and `\uses` are left
+  out. A card edited after its approval shows "changed since you approved it". (plasTeX drops comments before the hash
+  is taken; a host that wants every byte covered hashes the comments itself.)
   Approvals stay in the browser unless a host page stores them: a page embedding the text sets
   `window.symbolsApprovalHost = {load, set}` on the text's window and calls `window.symbolsApprovals.refresh()`.
-  The hashes are also in `blueprint-data.json` (`items[].sha`).
+  The hashes are also in `blueprint-data.json` (`items[].sha`), with the text each covers (`items[].seen`).
 * **Reader theme** (option `reader`): a reading column, light and dark modes, items set off by kind, a contents panel
   with a filter, the current section, the text size, and item tools that work on touch screens. The dependency graph
   page gets the same theme.
 * **Machine-readable output.** `blueprint-data.json` holds the items, their dependencies, Lean names, symbols and
-  status, each item's chapter and section, its text and a hash of what the reader sees (statement and proof, without
-  metadata) for other applications, and the advisories and the meaning of each kind; `symbols-report.json` holds the
+  status, each item's chapter and section, its text and a hash of what the reader sees (everything but `\label` and `\uses`) for other applications, and the advisories and the meaning of each kind; `symbols-report.json` holds the
   checker's problems, `symbols-advisories.json` its advisories.
 
 ## Use

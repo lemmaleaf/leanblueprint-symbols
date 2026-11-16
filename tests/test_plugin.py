@@ -140,9 +140,23 @@ def test_approve_markers_and_card_hash(tmp_path):
     b = _build(tmp_path / "b", tex.replace("Since $a=1$.", "Because $a=1$."), {"X.ok": "verified"})
     assert b["lem:paper"]["sha"] != a["lem:paper"]["sha"]
     assert b["thm:lean"]["sha"] == a["thm:lean"]["sha"]
-    (tmp_path / "c").mkdir()   # a metadata-only edit (a Lean name on \defines) is not a change of the card
-    c = _build(tmp_path / "c", tex.replace(r"\defines[X.a]{a}", r"\defines[X.b]{a}"), {"X.ok": "verified"})
-    assert c["def:a"]["sha"] == a["def:a"]["sha"]
+    # everything the reader sees is in the hash (2026-11-16): the title, a declared symbol's type and Lean name, a tag line;
+    # only \uses and \label are left out
+    def variant(name, old, new_):
+        assert old in tex, old
+        (tmp_path / name).mkdir()
+        return _build(tmp_path / name, tex.replace(old, new_), {"X.ok": "verified"})
+    c = variant("c", r"\defines[X.a]{a}", r"\defines[X.b]{a}")
+    assert c["def:a"]["sha"] != a["def:a"]["sha"]
+    d = variant("d", "{real number}", "{integer}")
+    assert d["def:a"]["sha"] != a["def:a"]["sha"] and d["def:a"]["tex"] == a["def:a"]["tex"]
+    e = variant("e", r"\begin{lemma}\label{lem:bare}", r"\begin{lemma}[A title]\label{lem:bare}")
+    assert e["lem:bare"]["sha"] != a["lem:bare"]["sha"]
+    f = variant("f", r"\label{lem:bare}\uses{def:a}", r"\label{lem:bare}\uses{def:a,thm:lean}")
+    assert f["lem:bare"]["sha"] == a["lem:bare"]["sha"]
+    g = variant("g", r"\label{lem:stated}\uses{def:a}\lean{X.stated}", r"\label{lem:stated}\uses{def:a}\lean{X.other}")
+    assert g["lem:stated"]["sha"] != a["lem:stated"]["sha"]
+    assert "real number" in a["def:a"]["seen"] and "def:a" not in a["lem:bare"]["seen"]
 
 
 @pytest.mark.slow
