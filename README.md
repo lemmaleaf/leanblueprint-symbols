@@ -37,7 +37,11 @@ plugin works one level down, on the symbols inside formulas:
   `strict`; written to `symbols-advisories.json` and `blueprint-data.json` "advisories"): a proof or a sketch inside a
   statement (`proof-in-statement`), a card with more than four top-level items or a notation card with more than six or
   more than one topic heading (`long-card`), a sentence of a definition that states a fact, "Each is a group"
-  (`definition-states-fact`). `blueprint-data.json` "kinds" gives each kind's severity and what it means.
+  (`definition-states-fact`), one concept defined in two cards (`duplicate-concept`: two `\defterm`s with one head
+  noun, the qualifiers of one among those of the other, case, plurals and stop words aside: "ideal" and "ideal of a
+  ring", "invariant" twice; or one qualifier on two carriers, "compact set" and "compact space"; not when the more
+  specific card `\uses` the other and presents itself as an instance, "is a Lie algebra", "a model ... that", "the
+  corner of"; a general term defined after a more specific one is already in use is reported on its card as late). `blueprint-data.json` "kinds" gives each kind's severity and what it means.
 * **Linked terms.** Every page carries its defined terms (`window.symbolsTerms`); the first use of a term in each other card
   links to the card that defines it, with the same preview as a symbol (after MathJax, so TeX source is never touched).
 * **Item-level links.** Each item of a labelled card's numbered lists (`enumerate`) has an anchor: `<label>--item-<n>`,

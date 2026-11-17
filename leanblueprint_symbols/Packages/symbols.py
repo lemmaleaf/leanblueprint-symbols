@@ -18,7 +18,7 @@ The style checks (core.style) read each card's text: a citation of a later card 
 the book in a card (chapter-mention), a project path (project-path), tag lines out of place or a Status outside the
 fixed list (tag-lines), a known result without a sketch (known-needs-why); and, as advisories (symbols-advisories.json
 and blueprint-data.json "advisories", never a problem, never stopped by strict): a proof inside a statement, a long
-card, a fact in a definition.
+card, a fact in a definition, one concept defined twice or its general form defined late (duplicate-concept).
 
 After parsing, the checker (leanblueprint_symbols.core) reports undeclared, redeclared and untyped symbols, terms
 used before their definition, and explanatory phrases inside statements; a symbol declared inside a lemma or proof but used elsewhere, a letter
@@ -460,7 +460,8 @@ def ProcessOptions(options, document):
             cites.setdefault(id(owner), []).append({"ref": getattr(target, "id", None) or "?", "item": item, "at": at})
         try:
             style = core.style([{"label": it["label"], "kind": it["kind"], "source": it["source"], "parent": it["parent"],
-                                 "pos": item_ids[id(it["node"])], "cites": cites.get(id(it["node"]), [])} for it in written])
+                                 "pos": item_ids[id(it["node"])], "cites": cites.get(id(it["node"]), []),
+                                 "terms": it["terms"], "uses": it["uses"]} for it in written])
         except Exception as e:   # never break a build over the style checks; say they did not run
             style = [{"kind": "style-error", "label": "the text", "detail": f"the style checks did not run: {e!r}",
                       "severity": "problem"}]

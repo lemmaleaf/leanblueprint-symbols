@@ -365,6 +365,12 @@ The cards below, and Chapter~\ref{ch:second}, are free to say so: this is an int
 \begin{proof}
   The constant is one, and one is at least zero, because every positive number is at least zero and one is positive.
 \end{proof}
+\begin{definition}[positive constant]\label{def:pos}\uses{def:a}
+  A \defterm{positive constant} is a constant that is greater than zero.
+\end{definition}
+\begin{definition}[constant of a group]\label{def:dup}
+  The \defterm{constant of a group} is its unit.
+\end{definition}
 \chapter{Second}\label{ch:second}
 \begin{lemma}\label{lem:late}\uses{def:a}
   $a<2$, proved in GRN/General/Box.lean as the next chapter shows. Proof: obvious.
@@ -379,7 +385,7 @@ The cards below, and Chapter~\ref{ch:second}, are free to say so: this is an int
 def test_style_checks_on_a_built_page(tmp_path):
     """The style checks through plasTeX (which joins a card's lines): a forward reference (to a card and to a chapter),
     plan-of-the-book words, a project path, a Status outside the fixed list, a known result whose proof is only a
-    reference; advisories apart (symbols-advisories.json, blueprint-data.json), never in symbols-report.json. A chapter's
+    reference; advisories apart (a duplicate concept among them, beside an instance that is not one) (symbols-advisories.json, blueprint-data.json), never in symbols-report.json. A chapter's
     introduction is free, and the clean lemma passes."""
     _build(tmp_path, STYLE_DOC)
     rep = json.loads((tmp_path / "symbols-report.json").read_text())
@@ -391,7 +397,10 @@ def test_style_checks_on_a_built_page(tmp_path):
     assert not [p for p in rep if p["label"] in ("lem:ok", "proof of lem:ok", "def:a")], rep
     assert all("severity" not in p for p in rep)
     adv = json.loads((tmp_path / "symbols-advisories.json").read_text())
-    assert {(p["kind"], p["label"]) for p in adv} == {("proof-in-statement", "lem:late"), ("definition-states-fact", "def:a")}, adv
+    assert {(p["kind"], p["label"]) for p in adv} == {("proof-in-statement", "lem:late"), ("definition-states-fact", "def:a"),
+                                                      ("duplicate-concept", "def:a"), ("duplicate-concept", "def:dup")}, adv
+    # the instance (it \uses def:a and reads "a constant that") is not flagged; the duplicate names the other card
+    assert any("def:dup" in p["detail"] for p in adv if p["label"] == "def:a")
     data = json.loads((tmp_path / "blueprint-data.json").read_text())
     assert data["advisories"] == adv and data["kinds"]["forward-ref"]["severity"] == "problem"
     assert data["kinds"]["long-card"]["severity"] == "advisory"

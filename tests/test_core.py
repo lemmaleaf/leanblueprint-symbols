@@ -364,3 +364,46 @@ def test_advisories():
                        r"Example: the integers are a group.")]) == [("definition-states-fact", "def:g")]
     assert found([card("def:g", "definition", r"A \defterm{group} is a set $G$ with a product. It is called abelian "
                        r"when the product commutes.")]) == []
+
+
+def test_duplicate_concept():
+    """One concept defined in two cards is an advisory on both, each naming the other; a special case that depends on
+    the general card and presents itself as an instance of it is not; a general term defined after a more specific one
+    is in use came late."""
+    lie = card("def:lie", "definition", r"The \defterm{Lie algebra} of $G$ is the set $\mathfrak g$ of matrices $X$ ...")
+    dup = card("def:lie-mat", "definition", r"For a matrix group $G$, the \defterm{Lie algebras of a matrix group} "
+               r"are the sets $\mathfrak g$ of $X$ with $e^{tX}\in G$.")
+    got = style([lie, dup])
+    assert {(p["kind"], p["label"], p["severity"]) for p in got} == {("duplicate-concept", "def:lie", "advisory"),
+                                                                     ("duplicate-concept", "def:lie-mat", "advisory")}
+    assert all(("def:lie-mat" if p["label"] == "def:lie" else "def:lie") in p["detail"] for p in got)
+    # a planted instance: it \uses the general card and reads "is a Lie algebra"
+    simple = card("def:simple", "definition", r"\uses{def:lie} A Lie algebra $\mathfrak g$ is a "
+                  r"\defterm{simple Lie algebra} when its only ideals are $0$ and $\mathfrak g$.")
+    assert found([lie, simple], "duplicate-concept") == []
+    # the same text without the \uses, or with it but no instance phrasing, is flagged
+    assert len(found([lie, card("def:simple", "definition", simple["source"].replace(r"\uses{def:lie}", ""))])) == 2
+    bare = card("def:simple", "definition", r"\uses{def:lie} The \defterm{simple Lie algebra} $\mathfrak s$ is the set of $X$.")
+    assert len(found([lie, bare], "duplicate-concept")) == 2
+    # "invariant" twice (plural and case aside), "compact set" / "compact space", "ideal" / "ideal of a ring"
+    assert len(found([card("def:a", "definition", r"An \defterm{invariant} is ..."),
+                      card("def:b", "definition", r"The \defterm{Invariants} are ...")])) == 2
+    assert len(found([card("def:a", "definition", r"A \defterm{compact set} is ..."),
+                      card("def:b", "definition", r"A \defterm{compact space} is ...")])) == 2
+    assert len(found([card("def:a", "definition", r"An \defterm{ideal} is ..."),
+                      card("def:b", "definition", r"An \defterm{ideal of a ring} is ...")])) == 2
+    # two qualifiers on one head are two concepts; a term in one card twice is not a duplicate
+    assert found([card("def:a", "definition", r"A \defterm{continuous function} is ..."),
+                  card("def:b", "definition", r"A \defterm{smooth function} is ...")]) == []
+    assert found([card("def:g", "definition", r"A \defterm{group} ... it is an \defterm{abelian group} when ...")]) == []
+    # stop words are words of their own, not of a term: "OR model" is not "model"
+    p = style([card("def:m", "definition", r"The \defterm{model} is ..."),
+               card("def:or", "definition", r"The \defterm{OR model} is ...")])
+    assert {x["label"] for x in p} == {"def:m", "def:or"} and "variant" in p[1]["detail"]
+    # a general term defined late: the special case is defined and used first
+    early = card("def:cs", "definition", r"A \defterm{compact subset} of the plane is ...")
+    use = card("lem:u", "lemma", r"\uses{def:cs} Every compact subsets of the plane is bounded.")
+    late = card("def:c", "definition", r"A \defterm{subset} is ...")
+    p = {x["label"]: x["detail"] for x in style([early, use, late])}
+    assert set(p) == {"def:cs", "def:c"} and "comes late" in p["def:c"] and "lem:u" in p["def:c"]
+    assert "comes late" not in p["def:cs"]

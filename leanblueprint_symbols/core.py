@@ -46,7 +46,11 @@ An *item* is one numbered unit (definition, lemma, theorem, proof, remark, ...) 
     known-needs-why   a statement whose Status is "known" has no proof block, or one that is only a reference
     advisory: proof-in-statement ("Proof:", "Why it is true", a QED mark in a statement), long-card (more than four
     top-level items; a notation card with more than six or more than one \\textbf topic), definition-states-fact (a
-    sentence of a definition without its defined term that starts "Each ... is", "It is", "Every ... is", ...)
+    sentence of a definition without its defined term that starts "Each ... is", "It is", "Every ... is", ...),
+    duplicate-concept (two cards define terms with one head noun, the qualifiers of one among those of the other:
+    "ideal" / "ideal of a ring", the same term twice; or one qualifier on two carriers: "compact set" / "compact space";
+    not when the more specific card \\uses the other and reads "is a <general>", "a <general> ... that" or "the
+    <general> of"; a general term defined after a more specific one is in use is reported on its card: it came late)
 
 KINDS holds a sentence for each kind, for a reader of a report.
 
@@ -486,7 +490,7 @@ def _check(items: list[dict]) -> list[dict]:
 
 STATUS_VALUES = ("known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open")
 TAGS = ("Status", "In Lean", "References")
-ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact"}
+ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept"}
 # what each kind means, in words a reader of a report can act on (exported with the data: blueprint-data.json "kinds")
 KINDS = {
     "undeclared": "a symbol is used before any card declares it (\\defines) and is not bound here (\\binds)",
@@ -517,6 +521,10 @@ KINDS = {
     "long-card": "advisory: a long card (more than four items; a notation card with more than six items or more than "
                  "one topic): consider splitting it",
     "definition-states-fact": "advisory: a definition seems to state a fact; facts go in a lemma, where they are proved",
+    "duplicate-concept": "advisory: two cards seem to define one concept (\"compact set\" and \"compact space\", "
+                         "\"ideal\" and \"ideal of a ring\"), or a special case is defined and used before its general "
+                         "concept: define a concept once, in the generality the book uses, and present special cases as "
+                         "instances of it",
 }
 
 
@@ -685,11 +693,11 @@ def _ref_only(proof_prose: str) -> bool:
 
 def style(items: list[dict]) -> list[dict]:
     """The style checks (forward-ref, chapter-mention, project-path, tag-lines, known-needs-why; advisory:
-    proof-in-statement, long-card, definition-states-fact). Each item needs "label", "kind", "source", and for a proof
+    proof-in-statement, long-card, definition-states-fact, duplicate-concept). Each item needs "label", "kind", "source", and for a proof
     "parent"; optionally "pos" (its place in the book, default its index in `items`) and "cites": what its references
     point at, [{"ref": label as written, "item": label of the card it lies in, "at": that card's place}] (a reference
-    to a section: the place of the first card after its start). Without "cites", the \\ref and \\itemref labels in the source that name items are used. Findings carry
-    "severity"."""
+    to a section: the place of the first card after its start). Without "cites", the \\ref and \\itemref labels in the source that name items are used. Optional "terms" and
+    "uses" (for duplicate-concept; default: the source's \\defterm and \\uses). Findings carry "severity"."""
     out = []
     pos = {it["label"]: k for k, it in enumerate(items)}
     proofs = {it.get("parent"): it for it in items if it.get("kind") == "proof" and it.get("parent")}
@@ -781,4 +789,180 @@ def style(items: list[dict]) -> list[dict]:
                     if "DEFTERM" not in s and FACT_RE.match(s) and not re.search(r"\b(?:called|call|write|written|denote[sd]?|stands? for|means|"
                                                           r"let|is said|we say|defined)\b", s, re.I):
                         add("definition-states-fact", label, f"\"{s[:80]}\": a fact in a definition; state it in a lemma")
+    for f in duplicate_concepts(items):
+        add("duplicate-concept", f["label"], f["detail"])
     return out
+
+
+# ---- duplicate-concept (advisory): "define a concept once, in the generality the book uses" (user, 2026-11-17).
+# A term is read as its words without stop words, each singular: a head noun (the last word before the first
+# preposition) and its qualifiers (the other words). Two terms of different cards name one concept when their heads
+# agree and the qualifiers of one are among those of the other ("ideal" / "ideal of a ring", "Lie algebra" / "Lie
+# algebra of a matrix group", "invariant" twice), or when their qualifiers agree and both heads are carriers
+# ("compact set" / "compact space"). A different qualifier on each side ("continuous function" / "smooth function") is
+# two concepts. Not flagged: the more specific card depends on the general one (\uses, directly or through other cards)
+# and presents itself as an instance of it: its text says "is a <general>", "a <general> ... that" or "the <general>
+# of" (an adjective may stand between: "is a simple Lie algebra").
+
+TERM_STOP = {"a", "an", "the", "of", "on", "in", "for", "to", "with", "and", "by", "at", "from", "its", "their",
+             "this", "that", "throughout", "over", "under", "between", "into", "as", "is", "are", "be"}
+TERM_PREPS = {"of", "on", "in", "for", "throughout", "over", "under", "between", "at", "from", "with", "into"}
+CARRIERS = {"set", "subset", "space", "subspace", "map", "mapping", "function", "operator", "matrix", "sequence"}
+_IRREGULAR = {"matrices": "matrix", "vertices": "vertex", "indices": "index", "simplices": "simplex", "bases": "basis",
+              "axes": "axis", "data": "datum", "criteria": "criterion"}
+
+
+def _singular(w: str) -> str:
+    if w in _IRREGULAR:
+        return _IRREGULAR[w]
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 4 and re.search(r"(?:ss|ch|sh|x|z)es$", w):
+        return w[:-2]
+    if len(w) > 3 and w.endswith("s") and not re.search(r"(?:ss|us|is|ics)$", w):
+        return w[:-1]
+    return w
+
+
+def _term_words(term: str) -> list[str]:
+    """A term's words: formulas dropped, lower case, punctuation off (a hyphenated word stays one word)."""
+    t = name_key(re.sub(r"\$[^$]*\$|\\\(.*?\\\)", " ", term))
+    return [w for w in (x.strip(".,;:()'\"`-") for x in t.replace("\u2013", "-").split()) if w]
+
+
+def term_shape(term: str):
+    """(head, qualifiers) of a term, both singular and without stop words; None for a term with no content word."""
+    words = _term_words(term)
+    first = next((k for k, w in enumerate(words) if w in TERM_PREPS and k > 0), len(words))
+    pre = [_singular(w) for w in words[:first] if w not in TERM_STOP]
+    post = [_singular(w) for w in words[first:] if w not in TERM_STOP]
+    if not pre:
+        return None
+    head = pre[-1]
+    if len(head) < 2:
+        return None
+    return head, frozenset(pre[:-1] + post) - {head}
+
+
+def _phrase_re(term: str) -> str:
+    """A regex for a term's words in running text: each word singular or plural, any spacing."""
+    parts = []
+    for w in _term_words(term):
+        one = _singular(w)
+        if w in ("a", "an", "the"):
+            parts.append("(?:an?|the)")
+        elif w in TERM_STOP:
+            parts.append(re.escape(w))
+        elif w in _IRREGULAR or one in _IRREGULAR.values():
+            many = next((k for k, v in _IRREGULAR.items() if v == one), w)
+            parts.append("(?:" + re.escape(one) + "|" + re.escape(many) + ")")
+        elif one.endswith("y") and len(one) > 3:
+            parts.append(re.escape(one[:-1]) + "(?:y|ies)")
+        else:
+            parts.append(re.escape(one) + "(?:s|es)?")
+    return r"\s+".join(parts)
+
+
+def _plain(src: str) -> str:
+    """A card's prose for reading terms: formulas as MATH, \\defterm{x} as x, no tag lines, lower case, one line."""
+    return _clean_words(_commands(_no_math(_tag_split(_body(src or ""))[0]), ("href",), keep_arg=1)).lower()
+
+
+def _presents_as_instance(text: str, general: str) -> bool:
+    g = _phrase_re(general)
+    adj = r"(?:[\w-]+\s+){0,3}?"
+    return bool(re.search(r"\b(?:is|are|be|being)\s+(?:an?\s+|the\s+|one\s+)?" + adj + g + r"\b", text)
+                or re.search(r"\b(?:an?|any|every|each)\s+" + adj + g + r"\b(?:[^.;]{0,80}?)\b(?:that|which|whose|"
+                             r"such that|in which|with|where)\b", text)
+                or re.search(r"\bthe\s+" + g + r"\s+of\b", text))
+
+
+def duplicate_concepts(items: list[dict]) -> list[dict]:
+    """The duplicate-concept advisories: findings {"label", "detail", "other"}. Each item: "label", "kind", "source";
+    optionally "terms" (default: the \\defterm arguments of its source), "uses" (default: its \\uses), "pos"."""
+    cards = [it for it in items if it.get("kind") != "proof"]
+    pos = {it["label"]: it.get("pos", k) for k, it in enumerate(items)}
+    terms, uses, text = {}, {}, {}
+    for it in cards:
+        src = it.get("source") or ""
+        terms[it["label"]] = it["terms"] if it.get("terms") is not None else \
+            [src[m.end():_braced(src, m.end() - 1) - 1] for m in re.finditer(r"\\defterm\s*\{", src)]
+        uses[it["label"]] = set(it["uses"]) if it.get("uses") is not None else \
+            {u.strip() for m in re.finditer(r"\\uses\s*\{([^}]*)\}", src) for u in m.group(1).split(",") if u.strip()}
+        text[it["label"]] = _plain(src)
+
+    reach_memo: dict[str, set] = {}
+
+    def reach(label):
+        if label not in reach_memo:
+            reach_memo[label] = set()
+            out, todo = set(), list(uses.get(label, ()))
+            while todo:
+                u = todo.pop()
+                if u not in out:
+                    out.add(u)
+                    todo += list(uses.get(u, ()))
+            reach_memo[label] = out
+        return reach_memo[label]
+
+    defs = [(it["label"], t, term_shape(t)) for it in cards for t in terms[it["label"]]]
+    defs = [d for d in defs if d[2] is not None]
+    found: dict[tuple[str, str], dict] = {}
+    for i, (la, ta, (ha, qa)) in enumerate(defs):
+        for lb, tb, (hb, qb) in defs[i + 1:]:
+            if la == lb:
+                continue
+            if ha == hb and qa == qb:
+                rel = "same"
+            elif ha == hb and qa < qb:
+                rel, gen, spec = "nested", (la, ta), (lb, tb)
+            elif ha == hb and qb < qa:
+                rel, gen, spec = "nested", (lb, tb), (la, ta)
+            elif qa == qb and qa and ha in CARRIERS and hb in CARRIERS:
+                rel = "carrier"
+            else:
+                continue
+            if rel == "nested":
+                instance = gen[0] in reach(spec[0]) and _presents_as_instance(text[spec[0]], gen[1])
+            elif rel == "carrier":
+                instance = any(g[0] in reach(s[0]) and _presents_as_instance(text[s[0]], g[1])
+                               for g, s in (((la, ta), (lb, tb)), ((lb, tb), (la, ta))))
+            else:
+                instance = False
+            late = ""
+            if rel == "nested" and pos[spec[0]] < pos[gen[0]]:
+                used = [it["label"] for it in cards if pos[it["label"]] < pos[gen[0]] and it["label"] != spec[0]
+                        and re.search(r"\b" + _phrase_re(spec[1]) + r"\b", text[it["label"]])]
+                late = (f"; the general term '{gen[1]}' comes late: the more specific '{spec[1]}' is defined before it, in "
+                        f"{spec[0]}" + (f", and used in {', '.join(used[:4])}" + (" ..." if len(used) > 4 else "")
+                                         if used else "") + ": define the general concept first")
+            if instance and not late:
+                continue
+            for me, mine, other, theirs in ((la, ta, lb, tb), (lb, tb, la, ta)):
+                key = (me, other)
+                if key in found:
+                    continue
+                if instance:   # only the late general definition is reported, on its own card
+                    if me != gen[0]:
+                        continue
+                    detail = late[2].upper() + late[3:]
+                elif rel == "same":
+                    detail = f"'{mine}' is also defined in {other}: define a concept once"
+                elif rel == "carrier":
+                    detail = (f"'{mine}' and '{theirs}' in {other} seem to be one concept on two carriers: define it once, "
+                              f"in the generality the book uses")
+                elif me == spec[0] and late:
+                    detail = (f"'{mine}' is a variant of '{theirs}', which is defined later, in {other}: define the general "
+                              f"concept first and present this one as an instance of it")
+                elif me == spec[0]:
+                    one = re.sub(r"\S+$", lambda m: _singular(m.group(0)), theirs)
+                    art = "an" if one[:1].lower() in "aeiou" else "a"
+                    how = (f"\"{art} {one} ... that\"" if other in reach(me) else
+                           f"\\uses{{{other}}} and \"{art} {one} ... that\"")
+                    detail = (f"'{mine}' is a variant of '{theirs}', defined in {other}: present it as an instance of it "
+                              f"({how}), or define the concept once")
+                else:
+                    detail = (f"'{mine}' has a variant '{theirs}', defined in {other}, which does not present itself as an "
+                              f"instance of it: define the concept once" + (late if me == gen[0] else ""))
+                found[key] = {"label": me, "other": other, "detail": detail}
+    return sorted(found.values(), key=lambda f: (pos.get(f["label"], 0), f["other"]))
