@@ -205,6 +205,31 @@ def test_several_definitions_are_numbered():
     assert check([{**two, "names": ["matrix box"]}]) == []
 
 
+def test_inline_numbered_parts_are_a_list():
+    r"""A statement that numbers its parts inline must be an enumerate list; a list, a reference to another card's
+    item and an equation number are not inline numbering; a planned card gets the advisory, never the problem."""
+    inline = _card(r"\begin{lemma}\label{lem:x} Let $f$ be smooth. Then (1) $f$ is bounded, and (2) $f$ is closed."
+                   r"\end{lemma}")
+    assert kinds(check([inline])) == [("unnumbered", "lem:x")]
+    for k in ("theorem", "proposition", "corollary"):
+        assert kinds(check([{**inline, "kind": k}])) == [("unnumbered", "lem:x")]
+    listed = _card(r"\begin{lemma}\label{lem:x} Let $f$ be smooth. Then\begin{enumerate}\item $f$ is bounded;"
+                   r"\item $f$ is closed.\end{enumerate}\end{lemma}", parts=2)
+    assert check([listed]) == []
+    refs = _card(r"By Lemma~\ref{lem:y}(1) and Lemma~\ref{lem:y}(2), and by parts (1) and (2) of it, $a=b$ "
+                 r"(in $(1)$ and $(2)$), as \eqref{e1} shows.")
+    assert check([refs]) == []
+    assert check([_card(r"Then (1) holds.")]) == []          # a single number is not a list of parts
+    assert check([{**inline, "kind": "remark"}]) == []        # only statements and definitions
+    from leanblueprint_symbols.core import unnumbered, ADVISORY, KINDS
+    plan = unnumbered([inline], plan=True)
+    assert [(p["kind"], p["label"]) for p in plan] == [("unnumbered-plan", "lem:x")]
+    assert "unnumbered-plan" in ADVISORY and "unnumbered" not in ADVISORY
+    assert "inline" in KINDS["unnumbered"] and "advisory" in KINDS["unnumbered-plan"]
+    two = {"label": "def:mb", "kind": "definition", "names": ["matrix box", "matrix corner"]}
+    assert [p["kind"] for p in unnumbered([two], plan=True)] == ["unnumbered-plan"]
+
+
 def test_remark_a_proof_relies_on():
     rem = {"label": "rem:c", "kind": "remark", "math": [], "text": ""}
     by_uses = _card("", uses=["rem:c"])

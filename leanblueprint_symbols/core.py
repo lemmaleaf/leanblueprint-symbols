@@ -27,8 +27,10 @@ An *item* is one numbered unit (definition, lemma, theorem, proof, remark, ...) 
                  through other items; a proof also through its statement); notation items are exempt
     proof-parts  a statement in numbered parts whose proof does not treat each part ("(1)", "(2)", ...)
     ref-after-term  "(Definition~\\ref{L})" right after a term that L defines: the term is already a link to L
-    unnumbered   a definition whose title names several things ("matrix box, matrix corner") and whose text is not
-                 a numbered list, one item per definition
+    unnumbered   a definition whose title names several things ("matrix box, matrix corner"), or a lemma, theorem,
+                 proposition or corollary whose prose numbers its parts inline ("(1) ... (2) ..."), that is not a
+                 numbered list, one item per definition or part (`unnumbered(items, plan=True)`: the same check on
+                 planned cards, as the advisory unnumbered-plan)
     remark-used  a remark that another item depends on (\\uses) or that a proof cites (\\ref): a claim a proof
                  relies on is a lemma, with a proof
 
@@ -423,10 +425,7 @@ def _writing(items: list[dict]) -> list[dict]:
             if hit:
                 problems.append({"kind": "ref-after-term", "label": it["label"],
                                  "detail": f"'{hit[0]}' is already a link to {target}: drop \"{m.group(0).strip()}\""})
-        names = it.get("names") or []
-        if it.get("kind") == "definition" and len(names) >= 2 and it.get("parts", 0) < 2:
-            problems.append({"kind": "unnumbered", "label": it["label"],
-                             "detail": f"it defines {len(names)} things ({', '.join(names)}): number them, one per item"})
+        problems += unnumbered([it])
     remarks = {it["label"] for it in items if it.get("kind") == "remark"}
     for it in items:
         if it["label"] in remarks:
@@ -438,6 +437,47 @@ def _writing(items: list[dict]) -> list[dict]:
             problems.append({"kind": "remark-used", "label": r,
                              "detail": f"{it['label']} relies on it: a remark nothing depends on, or a lemma with a proof"})
     return problems
+
+
+PART_KINDS = ("lemma", "theorem", "proposition", "corollary")
+# a reference to an item of a card ("\\ref{lem:x}(2)", "\\itemref{lem:x}{2}", "part (2) of"), not a part of this card
+ITEM_REF = re.compile(r"\\(?:ref|cref|Cref|autoref)\s*\{[^}]*\}\s*~?\s*\(\s*\d+[a-z]?\s*\)|\\itemref\s*\{[^}]*\}\s*\{[^}]*\}|"
+                      r"\\eqref\s*\{[^}]*\}|\b(?:parts?|items?|conditions?|equations?|steps?|cases?)\s*~?\s*\(\s*\d+\s*\)"
+                      r"(?:\s*(?:,|and|or|to|--|-)\s*\(\s*\d+\s*\))*", re.I)
+
+
+def _inline_parts(src: str) -> list[str]:
+    """The inline part numbers "(1)", "(2)", ... of a card's prose, in order, when it numbers its parts inline:
+    a "(1)" followed later by a "(2)", outside formulas, references to items and its numbered lists."""
+    body = _no_math(_tag_split(_body(src))[0])
+    body = re.sub(r"\\begin\{(enumerate|itemize)\}.*?\\end\{\1\}", " ", body, flags=re.S)
+    body = ITEM_REF.sub(" ", body)
+    nums = [m.group(1) for m in re.finditer(r"(?<![\w\\])\(\s*(\d)\s*\)", body)]
+    if "1" in nums and "2" in nums[nums.index("1") + 1:]:
+        return nums
+    return []
+
+
+def unnumbered(items: list[dict], plan: bool = False) -> list[dict]:
+    """A card of several definitions (its title names two or more things), or a statement (lemma, theorem,
+    proposition, corollary) that numbers its parts inline ("(1) ... (2) ..."), without a numbered list (one \\item per
+    definition or part). Kind "unnumbered" on written cards; with plan=True (planned cards) kind "unnumbered-plan",
+    an advisory."""
+    out = []
+    kind = "unnumbered-plan" if plan else "unnumbered"
+    for it in items:
+        if it.get("parts", 0) >= 2:
+            continue
+        names = it.get("names") or []
+        if it.get("kind") == "definition" and len(names) >= 2:
+            out.append({"kind": kind, "label": it["label"],
+                        "detail": f"it defines {len(names)} things ({', '.join(names)}): an enumerate list, one \\item "
+                                  f"per definition"})
+        elif it.get("kind") in PART_KINDS and _inline_parts(it.get("source") or ""):
+            out.append({"kind": kind, "label": it["label"],
+                        "detail": "its parts are numbered inline (\"(1) ... (2) ...\"): an enumerate list, one \\item "
+                                  "per part"})
+    return out
 
 
 def _check(items: list[dict]) -> list[dict]:
@@ -494,7 +534,8 @@ def _check(items: list[dict]) -> list[dict]:
 
 STATUS_VALUES = ("known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open")
 TAGS = ("Status", "In Lean", "References")
-ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept", "unlinked-term"}
+ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept", "unlinked-term",
+            "unnumbered-plan"}
 # what each kind means, in words a reader of a report can act on (exported with the data: blueprint-data.json "kinds")
 KINDS = {
     "undeclared": "a symbol is used before any card declares it (\\defines) and is not bound here (\\binds)",
@@ -508,7 +549,12 @@ KINDS = {
     "uses": "a symbol is used without a \\uses path to the card that declares it",
     "proof-parts": "a statement in numbered parts has a proof that skips a part",
     "ref-after-term": "\"(Definition~\\ref{...})\" right after a term that is already a link to it",
-    "unnumbered": "a definition of several things is not a numbered list",
+    "unnumbered": "a card of several definitions (its title names two or more things), or a statement that numbers "
+                  "its parts inline (\"(1) ... (2) ...\"), is not a numbered list: write an enumerate list, one \\item "
+                  "per definition or part, so each has its number, its anchor and its link",
+    "unnumbered-plan": "advisory: the plan of a planned card numbers several definitions or parts inline: when the card "
+                       "is written, it is an enumerate list, one \\item per definition or part (the same rule as "
+                       "unnumbered; a plan is never a problem)",
     "remark-used": "a remark that a proof relies on: make it a lemma with a proof",
     "unnamed": "a named definition does not introduce its name as a term (\\defterm)",
     "contains": "a \\contains names no card",

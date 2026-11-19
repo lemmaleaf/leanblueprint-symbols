@@ -20,8 +20,9 @@ plugin works one level down, on the symbols inside formulas:
   bound with two different types in items that depend on each other (one letter, one role); a symbol used in an item
   with no `\uses` path to the item that declares it (notation items exempt; a proof depends on its statement); a
   statement in numbered parts whose proof has no "(k)" for some part. Writing checks: "(Definition~\ref{L})" right
-  after a term that L defines (the term is already a link); a definition whose title names several things and whose
-  text is not a numbered list; a remark that another item `\uses` or a proof cites (it should be a lemma). A card
+  after a term that L defines (the term is already a link); a card of several definitions (its title names two or more things), or a
+  lemma, theorem, proposition or corollary that numbers its parts inline ("(1) ... (2) ..."), that is not an enumerate
+  list with one `\item` per definition or part (`unnumbered`; on a planned card the advisory `unnumbered-plan`); a remark that another item `\uses` or a proof cites (it should be a lemma). A card
   marked `\planned` is a placeholder whose text is a plan: the checks skip it, it has no Approve button, and its heading
   says "planned". `symbols.diagnose` lists a `\defines` line to
   complete for each undeclared symbol; the `strict` option stops the build on any problem.

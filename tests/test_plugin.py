@@ -252,6 +252,26 @@ def test_planned_cards_are_plans(tmp_path):
     assert r"\planned" not in by["def:later"]["tex"]
 
 
+@pytest.mark.slow
+def test_inline_numbering_is_a_problem_on_written_cards_and_advice_on_plans(tmp_path):
+    r"""A written lemma that numbers its parts inline fails as unnumbered; the same lemma as an enumerate list passes;
+    a planned card with inline numbering gets the advisory unnumbered-plan and no problem."""
+    src = (FIX / "clean.tex").read_text()
+    cards = (r"\begin{lemma}\label{lem:inline}" "\n" r"Then (1) $1=1$, and (2) $2=2$." "\n" r"\end{lemma}" "\n"
+             r"\begin{lemma}\label{lem:listed}" "\n" r"Then" "\n" r"\begin{enumerate}" "\n" r"\item $1=1$;" "\n"
+             r"\item $2=2$." "\n" r"\end{enumerate}" "\n" r"\end{lemma}" "\n"
+             r"\begin{lemma}\label{thm:plan}" "\n" r"\planned" "\n" r"Will state (1) a bound and (2) a limit." "\n"
+             r"\end{lemma}" "\n")
+    _build(tmp_path, src.replace(r"\end{document}", cards + r"\end{document}"))
+    problems = json.loads((tmp_path / "symbols-report.json").read_text())
+    advisories = json.loads((tmp_path / "symbols-advisories.json").read_text())
+    assert [(p["kind"], p["label"]) for p in problems] == [("unnumbered", "lem:inline")]
+    assert ("unnumbered-plan", "thm:plan") in [(p["kind"], p["label"]) for p in advisories]
+    assert not any(p["label"] == "lem:listed" for p in problems + advisories if p["kind"].startswith("unnumbered"))
+    kinds = json.loads((tmp_path / "blueprint-data.json").read_text())["kinds"]
+    assert kinds["unnumbered-plan"]["severity"] == "advisory" and kinds["unnumbered"]["severity"] == "problem"
+
+
 ITEMS_DOC = r"""\documentclass{report}
 \usepackage{amsmath, amsthm}
 \usepackage{hyperref}

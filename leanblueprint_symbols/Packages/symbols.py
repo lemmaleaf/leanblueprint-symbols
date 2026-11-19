@@ -543,6 +543,9 @@ def ProcessOptions(options, document):
                       "severity": "problem"}]
         problems += [{k: v for k, v in p.items() if k != "severity"} for p in style if p["severity"] == "problem"]
         advisories = [p for p in style if p["severity"] == "advisory"]
+        # a plan that numbers several definitions or parts inline: the unnumbered rule, as advice (a plan is not checked)
+        advisories += [{**p, "severity": "advisory"} for p in
+                       core.unnumbered([it for it in items if it.get("planned") and it["kind"] != "proof"], plan=True)]
         labels = {it["label"] for it in items}
         for it in items:   # a \contains naming no item, or the item itself
             for c in it.get("contains", []):
