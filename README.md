@@ -41,9 +41,38 @@ plugin works one level down, on the symbols inside formulas:
   noun, the qualifiers of one among those of the other, case, plurals and stop words aside: "ideal" and "ideal of a
   ring", "invariant" twice; or one qualifier on two carriers, "compact set" and "compact space"; not when the more
   specific card `\uses` the other and presents itself as an instance, "is a Lie algebra", "a model ... that", "the
-  corner of"; a general term defined after a more specific one is already in use is reported on its card as late). `blueprint-data.json` "kinds" gives each kind's severity and what it means.
-* **Linked terms.** Every page carries its defined terms (`window.symbolsTerms`); the first use of a term in each other card
-  links to the card that defines it, with the same preview as a symbol (after MathJax, so TeX source is never touched).
+  corner of"; a general term defined after a more specific one is already in use is reported on its card as late),
+  a term's adjective used where it is not linked (`unlinked-term`, see Linked terms). `blueprint-data.json` "kinds" gives each kind's severity and what it means.
+* **Linked terms.** The first use of a defined term in each card but the one that defines it links to that card, with
+  the same preview as a symbol (after MathJax, so TeX source is never touched). Which words link is decided at build
+  time, card by card (`core.term_links`), and travels with the card's text (a hidden `span.sym-terms`); every page also
+  carries the terms (`window.symbolsTerms`). A term links in these forms:
+  * its words, each in the singular or the plural: "ideals" for `ideal`, "matrices" for `Hermitian matrix`;
+  * an alias the book declares: `\defterm[aliases={compactness, Heine property}]{compact set}`, or anywhere in the
+    text or the preamble `\termalias{compactness}{compact set}`;
+  * its head noun replaced by one the book declares equivalent: `\termsynonyms{function, map}` makes "smooth map" a use
+    of `smooth function` (and the reverse);
+  * for a term made of an adjective and a noun ("compact set", "simple Lie algebra"), the adjective alone when it is
+    said of something the term applies to: before the noun or its family ("compact subset", "closed and bounded
+    set"), or after "is"/"are"/"be" ("$K$ is compact", "the set is closed and bounded", "$\mathfrak g$ is simple", "a
+    set that is not bounded", "it is compact" when "it" stands for a set in its sentence). Said of a formula, the
+    formula must be of that kind: its declared type (`\defines`, a typed `\binds{K \subseteq X}`) names the noun or a
+    set-like noun (group, space, algebra: they are sets), or, with no type declared, it is written as such objects are
+    (a capital for a set, a group or a matrix; a lower-case letter or `f\colon A\to B` for a map; `\mathfrak` for a
+    Lie algebra). Not linked: "closed under addition", "simple to check", "bounded by" (the predicate goes on in
+    another sense), "a simple computation" (another noun), "$f$ is bounded" (`f` is not written as a set), "a function
+    on a compact set $K$ is bounded" (`K` is the object of "on", not the subject), "a bounded operator $V$ is
+    closed" (said of an operator).
+
+  A longer term wins over a shorter one on the same words, everywhere ("edge elasticities" is a use of `edge
+  elasticity`, not of `elasticity`; in the card that defines the longer term its words still link to their own
+  terms), a term's own words win over another term's adjective, and an adjective two terms claim equally ("closed" of
+  `$K$` for `closed set` and `closed path`) goes to the carrier (set, map, matrix, algebra, group) or else to neither.
+  Nothing is linked inside formulas, links, headings or tag lines. The advisory `unlinked-term` reports a card, after
+  the term's definition, that uses the term's adjective where the rule declined it and links no form of the term:
+  "smooth map" when only `smooth function` is defined, said of "it" with nothing in the sentence to stand for, of a
+  formula with no type that is not written as such objects are, or claimed by two terms; the detail names the reason
+  (add an alias or a synonym, or reword).
 * **Item-level links.** Each item of a labelled card's numbered lists (`enumerate`) has an anchor: `<label>--item-<n>`,
   counted from 1 across the card's top-level lists in order (a list resumed after text goes on counting), and
   `<label>--item-<n>-<m>` for item m of a list nested in item n (`def:path--item-2`, `def:path--item-2-1`). A term

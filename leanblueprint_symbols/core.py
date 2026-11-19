@@ -52,6 +52,10 @@ An *item* is one numbered unit (definition, lemma, theorem, proof, remark, ...) 
     not when the more specific card \\uses the other and reads "is a <general>", "a <general> ... that" or "the
     <general> of"; a general term defined after a more specific one is in use is reported on its card: it came late)
 
+`term_links(cards, terms, types, synonyms)` decides where each defined term links in each card (exact, plural or
+singular, a declared alias or head-noun synonym, or the term's adjective said of something it applies to) and returns
+the unlinked-term advisories (the adjective used where the rule declined it); see the comment above it.
+
 KINDS holds a sentence for each kind, for a reader of a report.
 
 Optional fields for these: "source" (the item's TeX, for ref-after-term and remark-used) and "names" (the things
@@ -490,7 +494,7 @@ def _check(items: list[dict]) -> list[dict]:
 
 STATUS_VALUES = ("known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open")
 TAGS = ("Status", "In Lean", "References")
-ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept"}
+ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept", "unlinked-term"}
 # what each kind means, in words a reader of a report can act on (exported with the data: blueprint-data.json "kinds")
 KINDS = {
     "undeclared": "a symbol is used before any card declares it (\\defines) and is not bound here (\\binds)",
@@ -525,6 +529,9 @@ KINDS = {
                          "\"ideal\" and \"ideal of a ring\"), or a special case is defined and used before its general "
                          "concept: define a concept once, in the generality the book uses, and present special cases as "
                          "instances of it",
+    "unlinked-term": "advisory: a card uses a defined term's adjective (\"compact\" of \"compact set\") where the linking "
+                     "rule declined it (said of \"it\", of a formula of unknown kind, of a near noun: \"compact space\"), "
+                     "and no form of the term is linked in the card: add an alias or a synonym, or reword",
 }
 
 
@@ -779,7 +786,7 @@ def style(items: list[dict]) -> list[dict]:
             elif kind != "notation" and n_items > 4:
                 add("long-card", label, f"{n_items} items: consider splitting the card")
         if kind == "definition":   # a sentence with the defined term in it defines; the others are read for facts
-            marked = re.sub(r"\\defterm\s*\{", r"\\defterm{DEFTERM ", it.get("source") or "")
+            marked = re.sub(r"\\defterm\s*(?:\[[^\]]*\]\s*)?\{", r"\\defterm{DEFTERM ", it.get("source") or "")
             flat = _commands(_no_math(_tag_split(_body(marked))[0]), ("href",))
             flat = re.sub(r"\\item\b", "\n\n", flat)
             for para in re.split(r"\n\s*\n", flat):
@@ -886,7 +893,7 @@ def duplicate_concepts(items: list[dict]) -> list[dict]:
     for it in cards:
         src = it.get("source") or ""
         terms[it["label"]] = it["terms"] if it.get("terms") is not None else \
-            [src[m.end():_braced(src, m.end() - 1) - 1] for m in re.finditer(r"\\defterm\s*\{", src)]
+            [src[m.end():_braced(src, m.end() - 1) - 1] for m in re.finditer(r"\\defterm\s*(?:\[[^\]]*\]\s*)?\{", src)]
         uses[it["label"]] = set(it["uses"]) if it.get("uses") is not None else \
             {u.strip() for m in re.finditer(r"\\uses\s*\{([^}]*)\}", src) for u in m.group(1).split(",") if u.strip()}
         text[it["label"]] = _plain(src)
@@ -966,3 +973,465 @@ def duplicate_concepts(items: list[dict]) -> list[dict]:
                               f"instance of it: define the concept once" + (late if me == gen[0] else ""))
                 found[key] = {"label": me, "other": other, "detail": detail}
     return sorted(found.values(), key=lambda f: (pos.get(f["label"], 0), f["other"]))
+
+
+# ---- term links: where a defined term is linked, and the unlinked-term advisory (user, 2026-11-19: the most frequent
+# reader comment was "needs hyperlink" on compact, closed, bounded, simple, ideals, smooth maps). The decisions are made
+# here, on a card's words; the page (symbols.js) only places them (window.symbolsTermLinks), so what is linked and what
+# the advisory reports are one computation.
+#
+# A card's text is read as tokens: words (lower case), FORMULA for a formula, LINK for a link (\ref, \cite, \href, ...),
+# and the punctuation .,;:!?() . Headings, tag lines and the card's metadata are not read. A term links at its first use
+# in each card but the one that defines it (and that card's proof), in one of these forms:
+#   exact      the term as written, or with "s"/"es" (linked in every card, before its definition too)
+#   inflected  its words, each in the singular or the plural ("ideals", "matrices", "joined path" for "joined paths")
+#   alias      a variant the book declares: \defterm[aliases={compact, compactness}]{compact set}, \termalias{x}{term}
+#   synonym    its head noun replaced by one the book declares equivalent: \termsynonyms{function, map} makes "smooth
+#              map" a use of "smooth function"
+#   adjective  for a term "A head" with an adjective A ("compact set", "simple Lie algebra"): the word A alone, when
+#              it is said of something the term applies to:
+#                attributive  A followed by the head or a noun of its family ("compact subset", "closed and bounded set")
+#                predicative  "<subject> is/are/be A" (also "is closed and bounded"), A not followed by more words of
+#                             its predicate ("closed under addition", "simple to check" are other senses), the subject
+#                             being the head or its family ("the set is compact"), or a formula for an object of that
+#                             kind: its declared type (\defines, \binds{K \subseteq X}) names the head or its family,
+#                             or, with no type declared, it is written as such objects are (a capital for a set, a
+#                             group or a matrix, a lower-case letter for a map, \mathfrak for a Lie algebra)
+# The forms but the first link only in cards from the term's definition on (before it, a form other than the term as
+# written is more likely another sense). A longer term wins over a shorter one on the same words, a term's own words
+# over another's adjective form, and an adjective form that two terms claim on the same occurrence links neither.
+# unlinked-term (advisory): a card after the term's defining card uses the term's adjective in one of those places yet
+# the rule declined it, and no form of the term is linked in the card: said of "it"/"they", of a formula with no type
+# that is not written as such objects are, of a noun of a near carrier ("compact space" for "compact set", "smooth map"
+# for "smooth function"), or claimed by two terms. The detail gives the reason, for an alias, a synonym or a rewording.
+
+FORMULA, LINK = "\ue000", "\ue001"
+LINK_CMDS = ("ref", "itemref", "eqref", "cref", "Cref", "autoref", "pageref", "cite", "citep", "citet", "url", "href",
+             "hyperref")
+TOKEN_RE = re.compile(r"[^\W\d_][\w']*(?:-[\w']+)*|[\ue000\ue001]|[.,;:!?()]")
+# a carrier noun's family: the nouns that name the same kind of object ("compact subset" is a use of "compact set");
+# the class groups near carriers, for the advisory ("compact space" when only "compact set" is defined)
+CARRIER_FAMILY = {"set": {"set", "subset"}, "subset": {"set", "subset"}, "space": {"space"}, "subspace": {"subspace"},
+                  "map": {"map", "mapping"}, "mapping": {"map", "mapping"}, "function": {"function"},
+                  "operator": {"operator"}, "matrix": {"matrix"}, "sequence": {"sequence"}}
+CARRIER_CLASS = {"set": "set", "subset": "set", "space": "set", "subspace": "set", "map": "map", "mapping": "map",
+                 "function": "map", "operator": "map", "matrix": "matrix", "sequence": "sequence"}
+HEAD_CLASS = {"algebra": "algebra", "subalgebra": "algebra", "ideal": "algebra", "group": "group", "subgroup": "group"}
+ADJ_WORDS = {"simple", "compact", "open", "closed", "smooth", "free", "prime", "dense", "convex", "exact", "finite",
+             "perfect", "proper", "real", "complex", "positive", "negative", "regular", "singular", "stable", "unique",
+             "connected", "bounded", "invertible", "linear", "nondegenerate", "acyclic", "normal", "solvable",
+             "nilpotent", "semisimple", "reductive", "discrete", "continuous", "differentiable", "local", "global",
+             "special", "abelian", "unitary", "orthogonal", "hermitian", "symmetric", "diagonal", "triangular",
+             "cyclic", "injective", "surjective", "bijective", "trivial", "maximal", "minimal", "admissible", "balanced"}
+ADJ_SUFFIX = re.compile(r"(?:al|ic|ous|ive|ed|able|ible|ar|ary|ent|ant|ful|less|ian|ean)$")
+COPULAS = {"is", "are", "be", "being", "been", "was", "were", "remains", "remain", "becomes", "become", "stays"}
+ADVERBS = {"not", "also", "then", "thus", "therefore", "hence", "both", "still", "again", "always", "itself",
+           "themselves", "moreover", "so", "indeed", "automatically", "clearly", "again"}
+COORD = {"and", "or", ","}
+PRONOUNS = {"it", "they", "this", "these", "those", "each", "both", "all"}
+RELATIVE = {"that", "which", "who"}
+# a word after a predicative adjective that carries its predicate on in another sense
+PRED_BLOCK = {"under", "to", "by", "with", "from", "of", "on", "at", "above", "below", "enough", "away", "off", "up",
+              "down", "than", "definite", "semidefinite", "into", "onto", "toward", "towards", "relative", "w.r.t"}
+# a type naming one of these is a set, for "closed", "compact", "bounded" (a group, a space, an algebra are sets)
+SET_LIKE = {"set", "subset", "sets", "subsets", "group", "subgroup", "groups", "subgroups", "space", "subspace", "spaces",
+            "subspaces", "algebra", "subalgebra", "interval", "intervals", "ball", "sphere", "manifold", "region", "domain"}
+# where a subject's clause starts, looking back from it
+CLAUSE_START = {"that", "which", "where", "when", "whenever", "if", "iff", "since", "because", "and", "or", "so", "then",
+                "let", "suppose", "assume", "hence", "thus", "while", "whereas", "but", "unless"}
+PREPOSITIONS = TERM_PREPS | {"to", "by", "through", "within", "onto", "along", "around", "about"}
+
+
+def _plural(w: str) -> str:
+    inv = {v: k for k, v in _IRREGULAR.items()}
+    if w in inv:
+        return inv[w]
+    if re.search(r"[^aeiou]y$", w):
+        return w[:-1] + "ies"
+    if re.search(r"(?:s|x|z|ch|sh)$", w):
+        return w + "es"
+    return w + "s"
+
+
+def _forms(w: str) -> set:
+    """A word in the singular and the plural."""
+    one = _singular(w)
+    out = {w, one, _plural(one)}
+    if one == "index":
+        out.add("indexes")
+    return out
+
+
+def _adj_like(w: str) -> bool:
+    return len(w) > 2 and (w in ADJ_WORDS or bool(ADJ_SUFFIX.search(w)))
+
+
+def _commands_marked(s: str, names, mark: str) -> str:
+    """\\name[opt]{arg}... replaced by `mark`."""
+    pat = re.compile(r"\\(" + "|".join(re.escape(n) for n in names) + r")(?![A-Za-z])\*?")
+    out, i = [], 0
+    while True:
+        m = pat.search(s, i)
+        if not m:
+            out.append(s[i:])
+            return "".join(out)
+        out.append(s[i:m.start()])
+        j = m.end()
+        while True:
+            k = j
+            while k < len(s) and s[k] in " \t":
+                k += 1
+            if k < len(s) and s[k] == "[":
+                e = s.find("]", k)
+                j = e + 1 if e >= 0 else len(s)
+                continue
+            if k < len(s) and s[k] == "{":
+                j = _braced(s, k)
+                continue
+            break
+        out.append(mark)
+        i = j
+
+
+def card_tokens(src: str) -> list[tuple[str, str]]:
+    """A card's text as tokens (sig, formula source): a word in lower case, FORMULA, LINK or a punctuation mark. Its
+    environment lines, metadata, comments and tag lines are not read; \\defterm{x} reads as x."""
+    head = _tag_split(_body(src or ""))[0]
+    maths = []
+
+    def math(m):
+        maths.append(m.group(0))
+        return f" {FORMULA}{len(maths) - 1}{FORMULA} "
+    t = MATH_RE.sub(math, head)
+    t = _commands_marked(t, LINK_CMDS, f" {LINK} ")
+    t = re.sub(r"\\(?:begin|end)\s*\{[^}]*\}|\\item\b(?:\s*\[[^\]]*\])?|\\\\", " ", t)
+    t = re.sub(r"\\[`'^\"~=.](?:\{(\w)\}|(\w))|\\[uvHtcdbkr]\s*\{(\w)\}", lambda m: m.group(1) or m.group(2) or m.group(3), t)   # an accent: its letter
+    t = re.sub(r"\\[A-Za-z]+\*?|\\.", " ", t)
+    t = t.replace("~", " ").replace("---", "-").replace("--", "-").replace("``", " ").replace("''", " ")
+    t = t.replace("{", " ").replace("}", " ").replace("\u2019", "'").replace("\u2013", "-").replace("\u2014", "-")
+    out = []
+    for m in re.finditer(FORMULA + r"(\d+)" + FORMULA + r"|" + TOKEN_RE.pattern, t):
+        if m.group(1) is not None:
+            out.append((FORMULA, maths[int(m.group(1))]))
+        else:
+            out.append((m.group(0).lower(), ""))
+    return out
+
+
+def _formula_inner(src: str) -> str:
+    s = src.strip()
+    for a, b in (("$$", "$$"), ("$", "$"), ("\\(", "\\)"), ("\\[", "\\]")):
+        if s.startswith(a) and s.endswith(b) and len(s) >= len(a) + len(b):
+            return s[len(a):len(s) - len(b)].strip()
+    return s
+
+
+def _written_as(inner: str, cls: str) -> bool:
+    """A formula written as an object of the class is written (no type declared)."""
+    s = re.sub(r"^\\href\s*\{[^}]*\}\s*\{", "", inner).strip()
+    upper = bool(re.match(r"(?:\\math(?:cal|bb|scr|bf|sf)\s*\{?\s*[A-Za-z]|\\(?:mathrm|operatorname)\s*\{?\s*[A-Z]|[A-Z](?![A-Za-z])|\\(?:Gamma|Delta|Theta|"
+                          r"Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)\b)", s))
+    lower = bool(re.match(r"(?:[a-z](?![A-Za-z])|\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|"
+                          r"kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|phi|varphi|chi|psi|omega)\b)", s))
+    frak = s.startswith("\\mathfrak")
+    if cls == "set":
+        return (upper or s.startswith("\\{") or bool(re.match(r"[\[(][^,]*,[^,]*[\])]$", s))
+                or bool(re.search(r"\\subseteq|\\subset\b", s)))
+    if cls == "map":
+        return lower or bool(re.search(r"\\colon|\\to\b", s))
+    if cls == "algebra":
+        return frak
+    if cls in ("group", "matrix"):
+        return upper or s.startswith("\\mathrm")
+    if cls == "sequence":
+        return s.startswith("(")
+    return upper or frak
+
+
+def _typed_as(inner: str, cls: str, fam: set, types: dict):
+    """True or False when the formula's first symbol has a declared type (it names the family, or not); None when not."""
+    if cls == "set" and re.search(r"\\subseteq|\\subset\b", inner):
+        return True
+    keys = tokens(inner)
+    if not keys:
+        return None
+    ty = None
+    k = keys[0]
+    for kk in (k, (k[0], k[1], ""), (k[0], False, k[2]), (k[0], False, "")):
+        if types.get(kk):
+            ty = types[kk]
+            break
+    if not ty:
+        return None
+    words = set(re.findall(r"[a-z]+", name_key(ty)))
+    if cls == "set" and (re.search(r"\\subseteq|\\subset\b", ty) or words & SET_LIKE):
+        return True
+    return bool(words & {f for w in fam for f in _forms(w)})
+
+
+class _Term:
+    def __init__(self, idx, term, label, aliases, synonyms):
+        self.idx, self.term, self.label = idx, term, label
+        self.ok = "$" not in term and "\\(" not in term
+        words = _term_words(term) if self.ok else []
+        self.ok = self.ok and bool(words)
+        self.n_words = len(words)
+        w0 = " ".join(words)   # the term as written, and with "s" or "es" (what was linked before the other forms)
+        self.written = {w0, w0 + "s", w0 + "es"}
+
+        def seq(ws):
+            return [({"a", "an", "the"} if w in ("a", "an", "the") else {w}) if w in TERM_STOP else _forms(w) for w in ws]
+        self.variants = []   # (kind, [set of words per position])
+        if self.ok:
+            self.variants.append(("exact", seq(words)))
+        for a in aliases:
+            aw = _term_words(a)
+            if aw:
+                self.variants.append(("alias", seq(aw)))
+        first = next((k for k, w in enumerate(words) if w in TERM_PREPS and k > 0), len(words))
+        pre = [k for k in range(first) if words[k] not in TERM_STOP]
+        self.adj = None
+        if pre:
+            hp = pre[-1]
+            head = _singular(words[hp])
+            syn = set()
+            for g in synonyms:
+                if head in g:
+                    syn |= set(g) - {head}
+            if syn:
+                s = seq(words)
+                s[hp] = set().union(*(_forms(x) for x in syn))
+                self.variants.append(("synonym", s))
+            if len(pre) >= 2 and first == len(words) and pre[0] == 0 and _adj_like(words[0]):
+                fam = {head} | CARRIER_FAMILY.get(head, set()) | syn
+                cls = CARRIER_CLASS.get(head) or HEAD_CLASS.get(head) or "other"
+                near = {c for c, k in CARRIER_CLASS.items() if k == cls} - fam if head in CARRIER_CLASS else set()
+                self.adj = {"word": words[0], "head": head, "fam": fam, "cls": cls,
+                            "famforms": set().union(*(_forms(x) for x in fam)),
+                            "nearforms": set().union(*(_forms(x) for x in near)) if near else set()}
+
+
+def _adjective_at(toks, i, t: _Term, types):
+    """At toks[i] (the adjective of t): ("link", how, strength) / ("decline", reason, advisable) / None (not a use of the
+    term). Strength 2: the noun or a declared type says what it is said of; 1: only how the formula is written."""
+    a = t.adj
+    nxt = toks[i + 1][0] if i + 1 < len(toks) else ""
+    # attributive: the head or its family follows, possibly after "and B" / ", B"
+    if nxt in a["famforms"]:
+        return ("link", "attributive", 2)
+    if nxt in COORD and i + 3 < len(toks) and toks[i + 2][0] not in (FORMULA, LINK) and toks[i + 3][0] in a["famforms"]:
+        return ("link", "attributive", 2)
+    if nxt in a["nearforms"]:
+        return ("decline", f"'{a['word']} {nxt}': '{nxt}' is not a noun of '{t.term}' (declare it with \\termsynonyms or "
+                           f"an alias, or define '{a['word']} {_singular(nxt)}')", True)
+    # predicative: <subject> <copula> [adverbs] [B and] A
+    j = i - 1
+    if j >= 1 and toks[j][0] in COORD and toks[j - 1][0] not in (FORMULA, LINK) and TOKEN_RE.fullmatch(toks[j - 1][0]):
+        j -= 2
+    while j >= 0 and toks[j][0] in ADVERBS:
+        j -= 1
+    if j < 0 or toks[j][0] not in COPULAS:
+        return None
+    if nxt in PRED_BLOCK:
+        return None   # the predicate goes on in another sense: "closed under addition", "simple to check", "bounded by"
+    s = j - 1
+    while s >= 0 and toks[s][0] in ADVERBS:
+        s -= 1
+    return _said_of(toks, s, t, types, True)
+
+
+def _object_of_preposition(toks, s) -> bool:
+    """The formula at toks[s] is the object of a preposition ("a function on a compact set $K$ is bounded", "every
+    sequence in $K$ is bounded"): not the subject of what follows."""
+    for q in range(s - 1, max(-1, s - 6), -1):
+        w = toks[q][0]
+        if w in CLAUSE_START or not re.match(r"\w", w):
+            return False
+        if w in PREPOSITIONS:
+            return True
+    return False
+
+
+def _said_of(toks, s, t, types, first):
+    """Whether toks[s], the subject of "is <adjective>", is a thing t applies to (see _adjective_at)."""
+    a = t.adj
+    subj, src = (toks[s] if s >= 0 else ("", ""))
+    strong = 2 if first else 1
+    if subj == FORMULA:
+        if _object_of_preposition(toks, s):
+            return None
+        before = toks[s - 1][0] if s >= 1 else ""
+        if before in a["famforms"]:   # "the set $K$ is compact"
+            return ("link", "predicative", strong)
+        if before in NOUNS and not (a["cls"] == "set" and before in SET_LIKE):
+            return None               # "a bounded operator $V$ is unitary": said of another kind of object
+        inner = _formula_inner(src)
+        typed = _typed_as(inner, a["cls"], a["fam"], types)
+        if typed:
+            return ("link", "predicative", strong)
+        if typed is None and _written_as(inner, a["cls"]):
+            return ("link", "predicative", 1)
+        if typed is None and first:
+            return ("decline", f"'{a['word']}' is said of ${inner[:30]}$, which has no declared type and is not written as "
+                               f"a {a['head']} is (declare its type with \\defines or \\binds{{... \\in ...}}, or write "
+                               f"'the {a['head']} ${inner[:30]}$ is {a['word']}')", True)
+        return None
+    if subj in a["famforms"]:
+        return ("link", "predicative", strong)
+    if a["cls"] == "set" and subj in SET_LIKE:   # "the groups are compact": a group is a set
+        return ("link", "predicative", 1)
+    if subj in a["nearforms"]:
+        return ("decline", f"'the {subj} is {a['word']}': '{subj}' is not a noun of '{t.term}' (declare it with "
+                           f"\\termsynonyms or an alias)", True) if first else None
+    if not first:
+        return None
+    if subj in RELATIVE and s >= 1:   # "a set that is not bounded", "the loop itself, which is": what it stands for
+        q = s - 1
+        while q > 0 and (toks[q][0] == "," or toks[q][0] in ADVERBS):
+            q -= 1
+        return _said_of(toks, q, t, types, False)
+    if subj in PRONOUNS:   # "it", "they": the nearest formula or noun before it in its sentence that it can stand for
+        for q in range(s - 1, -1, -1):
+            w = toks[q][0]
+            if w in (".", ";", "?", "!"):
+                break
+            if w == FORMULA and _object_of_preposition(toks, q):
+                continue
+            if w == FORMULA or w in a["famforms"] or w in NOUNS or (a["cls"] == "set" and w in SET_LIKE):
+                return _said_of(toks, q, t, types, False)   # what it stands for: of the kind, or not
+        return ("decline", f"'{a['word']}' is said of '{subj}', which may be anything: name the {a['head']} ('the "
+                           f"{a['head']} is {a['word']}', '$X$ is {a['word']}')", True)
+    return None
+
+
+NOUNS = {f for w in list(CARRIER_CLASS) + list(HEAD_CLASS) + ["vector", "number", "point", "element", "curve", "path",
+                                                              "field", "representation", "transformation", "form"]
+         for f in _forms(w)}
+
+
+def _phrase_at(toks, i, seq) -> bool:
+    return i + len(seq) <= len(toks) and all(toks[i + k][0] in seq[k] for k in range(len(seq)))
+
+
+def term_links(cards: list[dict], terms: list[dict], types: dict | None = None, synonyms=()) -> dict:
+    """Where each defined term links, card by card, and the unlinked-term advisories.
+
+    cards: [{"key": the card's HTML id, "label", "source", "pos" (its place), "parent" (a proof: its statement's label),
+             "checked" (False for a planned card: linked, never reported)}]
+    terms: [{"term", "label" (its defining card), "aliases": [...]}], in any order.
+    types: {symbol key: declared type} (the book's \\defines); a card's own \\binds with a type are read from its "binds".
+    synonyms: groups of head nouns the book declares equivalent ([{"map", "function"}]).
+    Returns {"links": {key: [[term index, text, before, after, k, kind], ...]}, "advisories": [...]}: a link is the
+    k-th occurrence (0-based) of the words `text` between the tokens `before` and `after` ("" at an end)."""
+    types = dict(types or {})
+    syn = [set(_singular(w.strip().lower()) for w in g if w.strip()) for g in synonyms]
+    T = [_Term(k, t["term"], t["label"], t.get("aliases") or [], syn) for k, t in enumerate(terms)]
+    T = [t for t in T if t.ok]
+    order = sorted(T, key=lambda t: (-len(t.term), t.idx))
+    pos = {c["label"]: c.get("pos", k) for k, c in enumerate(cards)}
+    by_label = {c["label"]: c for c in cards}
+    links, advisories = {}, []
+    for c in cards:
+        toks = card_tokens(c.get("source") or "")
+        if not toks:
+            continue
+        ctypes = dict(types)
+        for b in list(c.get("binds") or []) + list((by_label.get(c.get("parent")) or {}).get("binds") or []):
+            sym, ty = split_bind(b)
+            if ty:
+                try:
+                    ctypes[key_of(sym)] = ty
+                except ValueError:
+                    pass
+        own = {c["label"], c.get("parent")}
+        exact, adj, declined = [], [], []
+        own_exact = []
+        after = lambda t: pos.get(c["label"], 0) >= pos.get(t.label, 0) or (  # noqa: E731
+            c.get("parent") is not None and pos.get(c["parent"], 0) >= pos.get(t.label, 0))
+        for t in T:
+            for kind, seq in t.variants:
+                for i in range(len(toks)):
+                    if _phrase_at(toks, i, seq):
+                        text = " ".join(w for w, _ in toks[i:i + len(seq)])
+                        if kind == "exact" and text not in t.written:
+                            kind1 = "inflected"
+                        else:
+                            kind1 = kind
+                        # before the definition only the term as written links (as it always did): another form there
+                        # is more likely another sense ("a term of the Leibniz formula" before "terms" are defined)
+                        if t.label not in own and kind1 != "exact" and not after(t):
+                            continue
+                        (own_exact if t.label in own else exact).append((i, i + len(seq), t, kind1))
+            if t.adj and (t.label in own or after(t)):   # own terms too: they claim their adjective from the others
+                for i, (w, _) in enumerate(toks):
+                    if w == t.adj["word"]:
+                        r = _adjective_at(toks, i, t, ctypes)
+                        if r and r[0] == "link":
+                            adj.append((i, i + 1, t, r[1], r[2]))
+                        elif r and t.label not in own:
+                            declined.append((i, t, r[1]))
+        # a term's own words win over another term's adjective form; of the terms that claim an adjective on one
+        # occurrence, the one with the stronger evidence (a noun or a type over the way a formula is written; for the
+        # way it is written, a carrier or an algebra over another noun); a tie links none
+        adj = [m for m in adj if not any(e[0] <= m[0] < e[1] for e in exact + own_exact)]
+        rank = lambda m: (m[4], 0 if m[2].adj["cls"] == "other" else 1)  # noqa: E731
+        at = {}
+        for m in adj:
+            at.setdefault(m[0], []).append(m)
+        adj, claimed = [], {e for m in exact + own_exact for e in range(m[0], m[1])}
+        for i, ms in at.items():
+            best = max(rank(m) for m in ms)
+            top = [m for m in ms if rank(m) == best]
+            names = sorted({m[2].term for m in top})
+            if len(names) == 1:
+                claimed.add(i)
+                if top[0][2].label not in own:
+                    adj.append(top[0][:4])
+                continue
+            for m in top:
+                if m[2].label not in own:
+                    declined.append((i, m[2], f"'{m[2].adj['word']}' here may belong to " + " or to ".join(
+                        f"'{x}'" for x in names) + f": write the noun ('{m[2].term}')"))
+        # a longer term wins on the same words, at every use of it ("edge elasticities" is not a use of "elasticity");
+        # in the card that defines the longer term its words still link to the terms they are made of ("gauge group")
+        span = [(m[0], m[1], m[2]) for m in exact]
+        exact = [m for m in exact if not any(a < m[1] and m[0] < b and b - a > m[1] - m[0] for a, b, _ in span)]
+        cands = {}
+        for m in exact + adj:
+            cands.setdefault(m[2].idx, []).append(m)
+        chosen = []
+        for t in order:
+            for m in sorted(cands.get(t.idx, []), key=lambda m: m[0]):
+                if not any(m[0] < b and a < m[1] for a, b, _, _ in chosen):
+                    chosen.append(m)
+                    break
+        sig = [w for w, _ in toks]
+        out = []
+        for a, b, t, kind in sorted(chosen, key=lambda m: m[0]):
+            text = " ".join(sig[a:b])
+            before, after = (sig[a - 1] if a > 0 else ""), (sig[b] if b < len(sig) else "")
+            k = sum(1 for p in range(a) if " ".join(sig[p:p + b - a]) == text and (sig[p - 1] if p > 0 else "") == before
+                    and (sig[p + b - a] if p + b - a < len(sig) else "") == after)
+            out.append([t.idx, text, before, after, k, kind])
+        if out:
+            links[c["key"]] = out
+        if c.get("checked", True):
+            linked = {m[2].idx for m in chosen}
+            reported, by_at = set(), {}
+            for i, t, reason in sorted(declined, key=lambda d: d[0]):
+                if t.idx in linked or t.idx in reported or pos.get(c["label"], 0) <= pos.get(t.label, 0):
+                    continue
+                if i in claimed:   # another term's words, or its adjective form
+                    continue
+                if c.get("parent") is not None and pos.get(c["parent"], 0) <= pos.get(t.label, 0):
+                    continue   # a proof of a card that comes before the term's definition
+                reported.add(t.idx)
+                by_at.setdefault(i, []).append((t, reason))
+            for i, found in sorted(by_at.items()):
+                ctx = " ".join("$...$" if w == FORMULA else "[link]" if w == LINK else w for w, _ in toks[max(0, i - 4):i + 4])
+                word = found[0][0].adj["word"]
+                which = " or ".join(f"'{t.term}' ({t.label})" for t, _ in found)
+                reason = found[0][1] if len(found) == 1 else "; ".join(dict.fromkeys(r for _, r in found))
+                advisories.append({"kind": "unlinked-term", "label": c["label"], "severity": "advisory",
+                                   "detail": f"\"...{ctx}...\": '{word}' is not linked to {which}: {reason}"})
+    return {"links": links, "advisories": advisories}

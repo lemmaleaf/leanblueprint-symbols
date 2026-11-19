@@ -404,3 +404,95 @@ def test_style_checks_on_a_built_page(tmp_path):
     data = json.loads((tmp_path / "blueprint-data.json").read_text())
     assert data["advisories"] == adv and data["kinds"]["forward-ref"]["severity"] == "problem"
     assert data["kinds"]["long-card"]["severity"] == "advisory"
+
+
+TERMS_DOC = r"""\documentclass{report}
+\usepackage{amsmath, amsthm}
+\usepackage{hyperref}
+\usepackage{blueprint}
+\usepackage{symbols}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{lemma}[definition]{Lemma}
+\termsynonyms{function, map}
+\termalias{Heine property}{compact set}
+\begin{document}
+\chapter{C}
+\begin{definition}[closed set and bounded set]\label{def:cb}
+\binds{K}
+\begin{enumerate}
+\item A set $K$ is a \defterm{closed set} when it contains its limits.
+\item A set $K$ is a \defterm{bounded set} when it lies in a ball.
+\end{enumerate}
+\end{definition}
+\begin{definition}[compact set]\label{def:compact}
+\uses{def:cb}
+\binds{K}
+A set $K$ is a \defterm[aliases={compactness}]{compact set} when it is closed and bounded.
+\end{definition}
+\begin{definition}[smooth function]\label{def:smooth}
+A \defterm{smooth function} is one with derivatives of every order.
+\end{definition}
+\begin{lemma}\label{lem:uses}
+\uses{def:compact, def:smooth}
+\binds{V, x, K, f}
+If $K$ is compact, a smooth map $f$ on $K$ is bounded. The space $V$ is closed under addition, and a simple computation
+shows that $x$ is closed. By compactness, the Heine property holds.
+
+\textit{References:} a compact note.
+\end{lemma}
+\end{document}
+"""
+
+
+@pytest.mark.slow
+def test_term_links_on_a_built_page(tmp_path):
+    r"""The term links decided at build time travel with each card's text (a hidden span.sym-terms), and the
+    unlinked-term advisory is in blueprint-data.json: \defterm[aliases=...], \termalias, \termsynonyms; "closed under"
+    and "a simple computation" not linked; "$x$ is closed" (lower case, no type) not linked and advised."""
+    import html as H
+    _build(tmp_path, TERMS_DOC)
+    page = (tmp_path / "p" / "sect0001.html").read_text()
+    spans = {m.group(1): json.loads(H.unescape(m.group(2))) for m in re.finditer(
+        r'id="([^"]+)"[^>]*>(?:(?!_thmwrapper).)*?<span class="sym-terms" hidden data-links="([^"]*)"', page, re.S)}
+    rows = {(r[6], r[2], r[7]) for r in spans["lem:uses"]}
+    # first use per card: "compact" (predicative) before "compactness" (its alias); the Heine property (\termalias)
+    assert rows == {("compact set", "compact", "predicative"), ("smooth function", "smooth map", "synonym")}
+    assert not any(r[6] == "closed set" for r in spans["lem:uses"])
+    assert {(r[6], r[2]) for r in spans["def:compact"]} == {("closed set", "closed"), ("bounded set", "bounded")}
+    assert sorted(r[0].split("#")[1] for r in spans["def:compact"]) == ["def:cb--item-1", "def:cb--item-2"]
+    data = json.loads((tmp_path / "blueprint-data.json").read_text())
+    adv = [a for a in data["advisories"] if a["kind"] == "unlinked-term"]
+    assert [a["label"] for a in adv] == ["lem:uses"] and "$x$" in adv[0]["detail"] and "closed" in adv[0]["detail"]
+    assert data["kinds"]["unlinked-term"]["severity"] == "advisory"
+    assert not json.loads((tmp_path / "symbols-report.json").read_text())
+
+
+def _chromium():
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+    except ImportError:
+        return None
+    for p in sorted((Path.home() / ".cache" / "ms-playwright").glob("chromium-*/chrome-linux64/chrome"), reverse=True):
+        return p
+    return None
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(_chromium() is None, reason="needs playwright and a Chromium")
+def test_term_links_are_placed_by_the_page(tmp_path):
+    """symbols.js places the decided links: the right occurrence of each word, nothing in the tag lines."""
+    from playwright.sync_api import sync_playwright
+    _build(tmp_path, TERMS_DOC)
+    with sync_playwright() as p:
+        b = p.chromium.launch(executable_path=str(_chromium()))
+        pg = b.new_page()
+        pg.goto((tmp_path / "p" / "sect0001.html").as_uri())
+        pg.wait_for_function("() => document.querySelector('a.sym-term')")
+        got = pg.evaluate("""() => [...document.querySelectorAll('#lem\\\\:uses a.sym-term')].map((a) =>
+            [a.textContent, a.getAttribute('href').split('#')[1], (a.previousSibling || {}).textContent || ''])""")
+        b.close()
+    texts = {t for t, _, _ in got}
+    assert texts == {"compact", "smooth map"}   # first use only; not "closed" (under addition), not "simple"
+    # "If $K$ is compact", not the tag line's "a compact note"
+    assert [(h, prev.endswith(" is ")) for t, h, prev in got if t == "compact"] == [("def:compact", True)]

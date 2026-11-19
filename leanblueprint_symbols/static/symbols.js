@@ -134,30 +134,115 @@
 
   // ---- defined terms: the first use of a term in each other card links to the card that defines it (the same
   // preview as a symbol). Run after MathJax has typeset, so TeX source in text nodes is never touched.
-  function linkTerms() {
-    const T = window.symbolsTerms || [];
-    if (!T.length) return;
+  // Which words link is decided at build time (core.term_links: plurals, aliases, synonyms, a term's adjective said of
+  // something it applies to) and travels with the card's text: <span class="sym-terms" hidden data-links="[[url, label,
+  // text, before, after, k, term, form], ...]">, the k-th occurrence of the words `text` between the tokens `before` and
+  // `after`. The page reads a card's text as the build does: words in lower case, a formula, a link, punctuation;
+  // headings and tag lines are not read. A page built without those decisions links the exact text of each term.
+  const FORMULA = '', LINK = '';
+  const TOK = /\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|[\p{L}][\p{L}\p{N}_']*(?:-[\p{L}\p{N}_']+)*|[.,;:!?()]/gu;
+  const NOREAD = 'script, style, button, .sym-foot, [class$="_thmheading"], .proof_heading, h1, h2, h3, h4, ' +
+    '.thm_header_hidden_extras, .modal-container';
+  const TAGLINE = /^(Status|In Lean|References):$/;
+  function isTagLine(p) {   // a tag line: a paragraph that starts with <i>Status:</i>, <i>In Lean:</i> or <i>References:</i>
+    const f = p.firstElementChild;
+    if (!f || f.tagName !== 'I' || !TAGLINE.test(f.textContent.trim())) return false;
+    for (let n = p.firstChild; n && n !== f; n = n.nextSibling) if (n.nodeType === 3 && n.nodeValue.trim()) return false;
+    return true;
+  }
+  function cardTokens(card) {
+    const toks = [];
+    let stop = false;
+    (function walk(el) {
+      for (const n of el.childNodes) {
+        if (stop) return;
+        if (n.nodeType === 3) {
+          const v = n.nodeValue.replace(/[‐‑–—]/g, '-').replace(/[‘’]/g, "'");
+          for (const m of v.matchAll(TOK)) {
+            const w = m[0];
+            toks.push({ sig: w[0] === '\\' ? FORMULA : w.toLowerCase(), node: w[0] === '\\' ? null : n, a: m.index, b: m.index + w.length });
+          }
+        } else if (n.nodeType === 1) {
+          if (n.matches(NOREAD)) continue;
+          const tag = n.tagName.toLowerCase();
+          if (tag === 'mjx-container' || tag === 'mjx-lazy') { toks.push({ sig: FORMULA }); continue; }
+          if (tag === 'a') { toks.push({ sig: LINK }); continue; }
+          if (tag === 'p' && isTagLine(n)) { stop = true; return; }
+          walk(n);
+        }
+      }
+    })(card);
+    return toks;
+  }
+  // the token where a decided link starts: the k-th occurrence of its words between its neighbours; failing that (the
+  // page reads a word the build did not, or the reverse), the first between the same next token, then the same previous
+  function findLink(toks, text, before, after, k) {
+    const words = text.split(' '), n = words.length;
+    const at = (i) => i + n <= toks.length && words.every((w, j) => toks[i + j].sig === w && toks[i + j].node);
+    const sig = (i) => (i >= 0 && i < toks.length ? toks[i].sig : '');
+    const hits = [];
+    for (let i = 0; i < toks.length; i++) if (at(i)) hits.push(i);
+    const full = hits.filter((i) => sig(i - 1) === before && sig(i + n) === after);
+    if (full.length > k) return full[k];
+    return hits.find((i) => sig(i + n) === after) ?? hits.find((i) => sig(i - 1) === before) ?? -1;
+  }
+  function placeLink(toks, i, n, row) {
+    const s = toks[i], e = toks[i + n - 1];
+    const doc = s.node.ownerDocument, r = doc.createRange();
+    r.setStart(s.node, s.a); r.setEnd(e.node, e.b);
+    const a = doc.createElement('a');
+    a.className = 'sym-term'; a.href = row[0]; a.title = 'defined in ' + row[1];
+    if (row[6]) a.dataset.term = row[6];
+    if (row[7]) a.dataset.form = row[7];
+    a.appendChild(r.extractContents());
+    r.insertNode(a);
+  }
+  function linkDecided(card, rows) {
+    const toks = cardTokens(card), spots = [];
+    for (const row of rows) {
+      const i = findLink(toks, row[2], row[3], row[4], row[5] || 0);
+      const n = row[2].split(' ').length;
+      if (i >= 0 && !spots.some((x) => x.i < i + n && i < x.i + x.n)) spots.push({ i, n, row });
+    }
+    // last first: a link placed later in a text node leaves the offsets of the earlier ones as they were
+    spots.sort((x, y) => y.i - x.i).forEach((x) => { try { placeLink(toks, x.i, x.n, x.row); } catch (e) { /* left unlinked */ } });
+  }
+  function linkExact(card, T) {
     const re = (t) => new RegExp('\\b' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:s|es)?\\b', 'i');
     const SKIP = 'a, mjx-container, script, style, button, .sym-foot, [class$="_thmheading"], h1, h2, h3, h4, .sym-term';
-    document.querySelectorAll('div[class*="_thmwrapper"], div.proof_wrapper').forEach((card) => {
-      const own = card.id || (card.previousElementSibling || {}).id || '';
-      const done = new Set();
-      for (const [term, url, label] of T) {
-        if (label === own || done.has(url + term)) continue;
-        const rx = re(term);
-        const walk = document.createTreeWalker(card, NodeFilter.SHOW_TEXT, {
-          acceptNode: (n) => (n.parentElement && !n.parentElement.closest(SKIP) && rx.test(n.nodeValue)
-            ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
-        const node = walk.nextNode();
-        if (!node) continue;
-        const m = node.nodeValue.match(rx), i = m.index;
-        const a = document.createElement('a');
-        a.className = 'sym-term'; a.href = url; a.textContent = m[0];
-        a.title = 'defined in ' + label;
-        const rest = node.splitText(i); rest.nodeValue = rest.nodeValue.slice(m[0].length);
-        node.parentNode.insertBefore(a, rest);
-        done.add(url + term);
-      }
+    const own = card.id || (card.previousElementSibling || {}).id || '';
+    const done = new Set();
+    for (const [term, url, label] of T) {
+      if (label === own || done.has(url + term)) continue;
+      const rx = re(term);
+      const walk = document.createTreeWalker(card, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.parentElement && !n.parentElement.closest(SKIP) && rx.test(n.nodeValue)
+          ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
+      const node = walk.nextNode();
+      if (!node) continue;
+      const m = node.nodeValue.match(rx), i = m.index;
+      const a = document.createElement('a');
+      a.className = 'sym-term'; a.href = url; a.textContent = m[0];
+      a.title = 'defined in ' + label;
+      const rest = node.splitText(i); rest.nodeValue = rest.nodeValue.slice(m[0].length);
+      node.parentNode.insertBefore(a, rest);
+      done.add(url + term);
+    }
+  }
+  // cards: the cards to link (default: every card of the page); a host that swaps a card's text calls this on it
+  function decided(card) {
+    const sp = card.querySelector(':scope > [class$="_thmcontent"] > .sym-terms, :scope > .proof_content > .sym-terms');
+    if (!sp) return null;
+    try { return JSON.parse(sp.dataset.links || '[]'); } catch (e) { return []; }
+  }
+  function linkTerms(cards) {
+    const T = window.symbolsTerms || [];
+    const all = cards || document.querySelectorAll('div[class*="_thmwrapper"], div.proof_wrapper');
+    const any = !!document.querySelector('.sym-terms');   // a page built with the decisions: no exact-text fallback
+    all.forEach((card) => {
+      if (card.querySelector('a.sym-term')) return;   // linked already
+      const rows = decided(card);
+      if (rows) linkDecided(card, rows); else if (!any && T.length) linkExact(card, T);
     });
   }
   window.symbolsLinkTerms = linkTerms;

@@ -10,6 +10,10 @@ Commands (inside a definition, lemma, theorem, ... or proof):
     \defines{M_e}{matrix in $\mathbb R^{n\times n}$}   this item introduces the symbol M_e, of the given type
     \binds{e,k,l}                                        symbols bound locally here ("for an edge e")
     \defterm{matrix unit}                                this item defines the term; renders as the term itself
+    \defterm[aliases={compactness}]{compact set}        ... and these words link to it too
+    \termalias{compactness}{compact set}                (anywhere) the same, outside the defining card
+    \termsynonyms{function, map}                        (anywhere) head nouns that name one kind of object: "smooth
+                                                         map" is a use of the term "smooth function"
     \contains{thm:a, thm:b}                              this result implies those (they are its special cases): the
                                                          implication edges a frontier is computed from (\uses says
                                                          what an item relies on, \contains what it generalizes)
@@ -18,7 +22,8 @@ The style checks (core.style) read each card's text: a citation of a later card 
 the book in a card (chapter-mention), a project path (project-path), tag lines out of place or a Status outside the
 fixed list (tag-lines), a known result without a sketch (known-needs-why); and, as advisories (symbols-advisories.json
 and blueprint-data.json "advisories", never a problem, never stopped by strict): a proof inside a statement, a long
-card, a fact in a definition, one concept defined twice or its general form defined late (duplicate-concept).
+card, a fact in a definition, one concept defined twice or its general form defined late (duplicate-concept), a
+term's adjective used where it is not linked (unlinked-term: core.term_links decides where each term links).
 
 After parsing, the checker (leanblueprint_symbols.core) reports undeclared, redeclared and untyped symbols, terms
 used before their definition, and explanatory phrases inside statements; a symbol declared inside a lemma or proof but used elsewhere, a letter
@@ -59,6 +64,7 @@ opens a preview of the item in place (symbols.js), with "Go to" and "Back to whe
 from __future__ import annotations
 
 import hashlib
+from html import escape as html_escape, unescape as html_unescape
 import json
 import re
 from pathlib import Path
@@ -151,8 +157,9 @@ class planned(Command):
 
 
 class defterm(Command):
-    r"""\defterm{term}"""
-    args = "term"   # not :str, which turns a term with a formula into "<plasTeX.TeXFragment object ...>" (2026-11-08)
+    r"""\defterm{term}, or \defterm[aliases={compact, compactness}]{compact set}: the aliases are more words that link to
+    the term wherever they appear (see core.term_links)"""
+    args = "[ opts:str ] term"   # not term:str, which turns a term with a formula into "<plasTeX.TeXFragment object ...>" (2026-11-08)
 
     def digest(self, tokens):
         Command.digest(self, tokens)
@@ -166,6 +173,34 @@ class defterm(Command):
         term = re.sub(r"\s+", " ", term)
         self.userdata["symbols_term"] = term.strip()   # the list item it sits in is found from this node
         self.parentNode.userdata.setdefault("terms", []).append(term.strip())
+        opts = str(self.attributes.get("opts") or "")
+        m = re.search(r"aliases\s*=\s*(?:\{([^{}]*)\}|([^,]*))", opts)
+        if m:
+            aliases = [a.strip() for a in (m.group(1) if m.group(1) is not None else m.group(2)).split(",") if a.strip()]
+            self.parentNode.userdata.setdefault("term_aliases", []).append((term.strip(), aliases))
+
+
+class termalias(Command):
+    r"""\termalias{alias}{term}: the words `alias` link to the defined term `term` wherever they appear (in the preamble
+    or anywhere in the text)."""
+    args = "alias:str term:str"
+
+    def digest(self, tokens):
+        Command.digest(self, tokens)
+        self.ownerDocument.userdata.setdefault("symbols_term_aliases", []).append(
+            (re.sub(r"\s+", " ", str(self.attributes["term"])).strip(), [str(self.attributes["alias"]).strip()]))
+
+
+class termsynonyms(Command):
+    r"""\termsynonyms{function, map}: head nouns that name one kind of object in this book, so "smooth map" is a use of
+    the term "smooth function" (and "smooth function" of "smooth map")."""
+    args = "words:str"
+
+    def digest(self, tokens):
+        Command.digest(self, tokens)
+        words = [w.strip() for w in str(self.attributes["words"]).split(",") if w.strip()]
+        if len(words) > 1:
+            self.ownerDocument.userdata.setdefault("symbols_term_synonyms", []).append(words)
 
 
 ITEM_PART = re.compile(r"[0-9]{1,3}(?:[.-][0-9]{1,3}){0,3}")
@@ -313,16 +348,55 @@ def ProcessOptions(options, document):
         window.symbolsTerms = [[term, url, label], ...], longest first (so 'corner matrix' wins over 'corner')."""
         if "terms_js" not in state:
             out = []
-            for it in state.get("items", []):
-                node = state.get("by_label", {}).get(it["label"])
-                url = getattr(node, "url", None) if node is not None else None
-                for t in it.get("terms", []):   # a term defined inside a list item links to that item
-                    if url:
-                        a = it.get("term_items", {}).get(t)
-                        out.append([t, _at(url, a) if a else url, it["label"]])
+            for t, la, url in term_urls():
+                out.append([t, url, la])
             out.sort(key=lambda x: -len(x[0]))
             state["terms_js"] = "<script>window.symbolsTerms = " + json.dumps(out).replace("</", "<\\/") + ";</script>\n"
         return state["terms_js"]
+
+    def term_urls() -> list:
+        """(term, defining label, url) for each defined term: a term defined inside a list item links to that item."""
+        if "term_urls" not in state:
+            out = []
+            for it in state.get("items", []):
+                node = state.get("by_label", {}).get(it["label"])
+                url = getattr(node, "url", None) if node is not None else None
+                for t in it.get("terms", []):
+                    if url:
+                        a = it.get("term_items", {}).get(t)
+                        out.append((t, it["label"], _at(url, a) if a else url))
+            state["term_urls"] = out
+        return state["term_urls"]
+
+    def term_spans(doc, s: str) -> str:
+        """Each card's term links, decided at build time (core.term_links), travel with its text: a hidden
+        <span class="sym-terms" data-links="[[url, label, text, before, after, k, term, form], ...]"> first in the card's
+        text (and in its proof's), which symbols.js places: the k-th occurrence of the words `text` between the tokens
+        `before` and `after`. In the text, not on the card, so a host that swaps a card's text swaps its links with it."""
+        links = state.get("term_links")
+        if not links or "_thmwrapper" not in s and "proof_wrapper" not in s:
+            return s
+        urls = {(t, la): u for t, la, u in term_urls()}
+        tl = state.get("term_list", [])
+        out, last = [], 0
+        for m in re.finditer(r'<div class="[^"]*(?:_thmwrapper|proof_wrapper)[^"]*" id="([^"]+)"[^>]*>', s):
+            rows = []
+            for idx, text, before, after, k, kind in links.get(html_unescape(m.group(1)), []):
+                t, la = tl[idx]
+                if (t, la) in urls:
+                    rows.append([urls[(t, la)], la, text, before, after, k, t, kind])
+            if not rows:
+                continue
+            c = re.compile(r'<div class="[^"]*(?:_thmcontent|proof_content)[^"]*"[^>]*>').search(s, m.end())
+            if not c or s.find("_thmwrapper", m.end(), c.start()) >= 0 or s.find("proof_wrapper", m.end(), c.start()) >= 0:
+                continue
+            out.append(s[last:c.end()])
+            out.append('<span class="sym-terms" hidden data-links="' + html_escape(json.dumps(rows), quote=True) + '"></span>')
+            last = c.end()
+        out.append(s[last:])
+        return "".join(out)
+
+    document.addPackageResource(PackageProcessFilecontents(data=term_spans))
 
     def head_links(doc, s: str) -> str:
         """Every HTML page (the dependency graph pages too, which the package resources do not reach) links the
@@ -371,6 +445,7 @@ def ProcessOptions(options, document):
             # \defines etc. digest into the paragraph that holds them: gather from the item's whole subtree
             defs, bnds, terms = list(n.userdata.get("defines", [])), list(n.userdata.get("binds", [])), \
                 list(n.userdata.get("terms", []))
+            aliases = list(n.userdata.get("term_aliases", []))
             leans = list(n.userdata.get("defines_lean", []))
             is_planned = bool(n.userdata.get("planned"))
             conts = list(n.userdata.get("contains", []))
@@ -380,6 +455,7 @@ def ProcessOptions(options, document):
                 defs += d.userdata.get("defines", []) if hasattr(d, "userdata") else []
                 bnds += d.userdata.get("binds", []) if hasattr(d, "userdata") else []
                 terms += d.userdata.get("terms", []) if hasattr(d, "userdata") else []
+                aliases += d.userdata.get("term_aliases", []) if hasattr(d, "userdata") else []
                 leans += d.userdata.get("defines_lean", []) if hasattr(d, "userdata") else []
                 conts += d.userdata.get("contains", []) if hasattr(d, "userdata") else []
                 is_planned = is_planned or bool(getattr(d, "userdata", {}).get("planned"))
@@ -410,7 +486,7 @@ def ProcessOptions(options, document):
             n.userdata["symbols_anchors"] = anchors
             names = [x.strip() for x in re.split(r",| and ", title.textContent) if x.strip()] \
                 if title is not None and kind == "definition" else []
-            items.append({"label": label, "kind": kind, "defines": defs, "source": src, "names": names, "binds": bnds, "terms": terms, "leans": dict(leans), "contains": conts,
+            items.append({"label": label, "kind": kind, "defines": defs, "source": src, "names": names, "binds": bnds, "terms": terms, "term_aliases": aliases, "leans": dict(leans), "contains": conts,
                           "uses": uses, "parts": parts, "planned": is_planned,
                           "anchors": anchors, "term_items": term_items, "sym_items": sym_items,
                           "math": [m.source for m in maths], "text": n.textContent, "parent": parent_label,
@@ -422,7 +498,7 @@ def ProcessOptions(options, document):
         # a planned card (\planned) is a plan, not mathematics: the checks read only the written cards and their proofs
         planned_labels = {it["label"] for it in items if it.get("planned")}
         written = [it for it in items if not it.get("planned") and it.get("parent") not in planned_labels]
-        problems = core.check([{k: v for k, v in it.items() if k not in ("node", "leans", "contains", "planned", "anchors", "term_items", "sym_items")} for it in written])
+        problems = core.check([{k: v for k, v in it.items() if k not in ("node", "leans", "contains", "planned", "anchors", "term_items", "sym_items", "term_aliases")} for it in written])
         for it in written:   # a definition with a name introduces that name as a term in its text (user, 2026-11-01)
             title = getattr(it["node"], "title", None)
             if it["kind"] != "definition" or title is None:
@@ -498,6 +574,24 @@ def ProcessOptions(options, document):
                 table.setdefault(core.key_of(sym), {"sym": sym, "type": ty, "label": it["label"],
                                                      "lean": it.get("leans", {}).get(sym),
                                                      "item": it.get("sym_items", {}).get(sym)})
+        # where each defined term links in each card, and the unlinked-term advisories (core.term_links)
+        term_list = [(t, it["label"]) for it in items for t in it.get("terms", [])]
+        written_ids = {id(it) for it in written}
+        extra = {}
+        for t, al in [a for it in items for a in it.get("term_aliases", [])] + document.userdata.get("symbols_term_aliases", []):
+            extra.setdefault(t, []).extend(al)
+        try:
+            tl = core.term_links(
+                [{"key": it["node"].id, "label": it["label"], "source": it["source"], "pos": item_ids[id(it["node"])],
+                  "parent": it["parent"], "binds": it["binds"], "checked": id(it) in written_ids} for it in items],
+                [{"term": t, "label": la, "aliases": extra.get(t, [])} for t, la in term_list],
+                types={k: e["type"] for k, e in table.items()}, synonyms=document.userdata.get("symbols_term_synonyms", []))
+            advisories += [p for p in tl["advisories"] if p["label"] not in planned_labels]
+            state["term_links"] = tl["links"]
+        except Exception as e:   # never break a build over the links: the page falls back to exact matches
+            log.warning(f"symbols: the term links were not computed: {e!r}")
+            state["term_links"] = None
+        state["term_list"] = term_list
         state.update(items=items, problems=problems, advisories=advisories, table=table, by_label=by_label)
         outdir = Path(document.userdata.get("working-dir", ".")).resolve()
         (outdir / "symbols-report.json").write_text(json.dumps(problems, indent=1) + "\n")
