@@ -432,3 +432,33 @@ def test_duplicate_concept():
     p = {x["label"]: x["detail"] for x in style([early, use, late])}
     assert set(p) == {"def:cs", "def:c"} and "comes late" in p["def:c"] and "lem:u" in p["def:c"]
     assert "comes late" not in p["def:cs"]
+
+
+def test_long_card_counts_words_displays_and_proof_length():
+    """Accretion caught mechanically (user, 2026-11-20): a statement past LIMITS words or displayed formulas, or a proof past
+    LIMITS proof words, is a long card; the size of a card is core.size."""
+    from leanblueprint_symbols.core import LIMITS, size
+    long_words = " ".join(["word"] * (LIMITS["words"] + 1)) + "."
+    assert found([card("lem:a", "lemma", long_words)]) == [("long-card", "lem:a")]
+    assert found([card("lem:a", "lemma", " ".join(["word"] * LIMITS["words"]) + " $x$.")]) == []   # formulas are not words
+    displays = " ".join(f"\\[x_{k}=0\\]" for k in range(LIMITS["displays"] + 1))
+    assert found([card("lem:a", "lemma", "Then " + displays)]) == [("long-card", "lem:a")]
+    assert found([card("lem:a", "lemma", "Then " + displays.split(" ", 1)[1])]) == []
+    proof = " ".join(["step"] * (LIMITS["proof_words"] + 1))
+    assert found([card("lem:a", "lemma", "$x>0$."), card("proof of lem:a", "proof", proof, parent="lem:a")]) == [("long-card", "lem:a")]
+    assert found([card("lem:a", "lemma", "$x>0$."), card("proof of lem:a", "proof", "step " * 100, parent="lem:a")]) == []
+    assert size(card("lem:a", "lemma", "One two \\[x=1\\] and $y$.\n\n\\textit{Status:} open.")["source"]) == {"items": 0, "words": 3, "displays": 1}
+
+
+def test_formula_definition_is_a_weak_advisory():
+    """A definition given by a formula is derived (a lemma shows it is the unique answer) or says why this formula."""
+    bare = card("def:f", "definition", r"The \defterm{action} is \[S(A)=\frac{1}{2g^2}\int \operatorname{tr} F_{\mu\nu}F^{\mu\nu}\,dx.\]")
+    assert found([bare], "formula-definition") == [("formula-definition", "def:f")]
+    why = card("def:f", "definition", r"The \defterm{action} is \[S(A)=\frac{1}{2g^2}\int \operatorname{tr} F_{\mu\nu}F^{\mu\nu}\,dx;\] "
+               r"this is the simplest gauge-invariant choice.")
+    assert found([why], "formula-definition") == []
+    lemma = card("lem:u", "lemma", "\\uses{def:f}\nThe action is the unique functional of degree two that is gauge invariant.")
+    assert found([bare, lemma], "formula-definition") == []
+    prose = card("def:f", "definition", "A \\defterm{group} is a set with an associative product, a unit and inverses: " + "more words " * 25)
+    assert found([prose], "formula-definition") == []
+    assert found([card("lem:f", "lemma", r"\[x=1\]")], "formula-definition") == []

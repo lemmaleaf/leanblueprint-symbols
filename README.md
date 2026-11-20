@@ -36,8 +36,10 @@ plugin works one level down, on the symbols inside formulas:
   (`tag-lines`); a statement with Status "known" whose proof block is missing or only a reference (`known-needs-why`).
   **Advisories**, a second look that never makes a page not done (not in `symbols-report.json`, not stopped by
   `strict`; written to `symbols-advisories.json` and `blueprint-data.json` "advisories"): a proof or a sketch inside a
-  statement (`proof-in-statement`), a card with more than four top-level items or a notation card with more than six or
-  more than one topic heading (`long-card`), a sentence of a definition that states a fact, "Each is a group"
+  statement (`proof-in-statement`), a card with more than four top-level items, more than 150 words or four displayed formulas in
+  its statement, or a proof of more than 300 words (`core.LIMITS`, `core.size`), or a notation card with more than six
+  items or more than one topic heading (`long-card`), a definition that is mostly a displayed formula with no sentence
+  saying why this formula and no lemma deriving it as the unique answer to a requirement (`formula-definition`, weak), a sentence of a definition that states a fact, "Each is a group"
   (`definition-states-fact`), one concept defined in two cards (`duplicate-concept`: two `\defterm`s with one head
   noun, the qualifiers of one among those of the other, case, plurals and stop words aside: "ideal" and "ideal of a
   ring", "invariant" twice; or one qualifier on two carriers, "compact set" and "compact space"; not when the more

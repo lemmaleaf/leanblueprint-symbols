@@ -47,7 +47,9 @@ An *item* is one numbered unit (definition, lemma, theorem, proof, remark, ...) 
                       is one of STATUS_VALUES
     known-needs-why   a statement whose Status is "known" has no proof block, or one that is only a reference
     advisory: proof-in-statement ("Proof:", "Why it is true", a QED mark in a statement), long-card (more than four
-    top-level items; a notation card with more than six or more than one \\textbf topic), definition-states-fact (a
+    top-level items, 150 words of statement, four displayed formulas, a proof of 300 words (LIMITS); a notation card with
+    more than six or more than one \\textbf topic), formula-definition (weak: a definition mostly a displayed formula with
+    no sentence of why and no lemma deriving it as the unique answer), definition-states-fact (a
     sentence of a definition without its defined term that starts "Each ... is", "It is", "Every ... is", ...),
     duplicate-concept (two cards define terms with one head noun, the qualifiers of one among those of the other:
     "ideal" / "ideal of a ring", the same term twice; or one qualifier on two carriers: "compact set" / "compact space";
@@ -535,7 +537,14 @@ def _check(items: list[dict]) -> list[dict]:
 STATUS_VALUES = ("known", "proved and rechecked in this project", "claimed elsewhere, not checked here", "open")
 TAGS = ("Status", "In Lean", "References")
 ADVISORY = {"proof-in-statement", "long-card", "definition-states-fact", "duplicate-concept", "unlinked-term",
-            "unnumbered-plan"}
+            "unnumbered-plan", "formula-definition"}
+# a card's size past which it gets a second look (long-card; user, 2026-11-20: accretion is caught mechanically): top-level
+# items, words of its statement's prose (formulas apart), displayed formulas of its statement, words of its proof's prose
+# (a displayed formula of the proof counts as WORDS_PER_DISPLAY words). The same numbers are what a revision may not push a
+# card past by appending (the book tools' answerer restructures or splits instead).
+LIMITS = {"items": 4, "words": 150, "displays": 4, "proof_words": 300}
+WORDS_PER_DISPLAY = 15
+DISPLAY_RE = re.compile(r"\\\[|\$\$|\\begin\{(?:equation|align|gather|multline|eqnarray)\*?\}")
 # what each kind means, in words a reader of a report can act on (exported with the data: blueprint-data.json "kinds")
 KINDS = {
     "undeclared": "a symbol is used before any card declares it (\\defines) and is not bound here (\\binds)",
@@ -568,8 +577,12 @@ KINDS = {
                  "Status from the fixed list, never words of its sentences",
     "known-needs-why": "a result with status known needs a proof block with a sketch of why it is true, not only a reference",
     "proof-in-statement": "advisory: a proof or a sketch seems to sit inside the statement; it goes in the proof block",
-    "long-card": "advisory: a long card (more than four items; a notation card with more than six items or more than "
-                 "one topic): consider splitting it",
+    "long-card": "advisory: a long card (more than four items, more than 150 words of statement, more than four displayed "
+                 "formulas, or a proof of more than 300 words; a notation card with more than six items or more than one "
+                 "topic): consider splitting or restructuring it",
+    "formula-definition": "advisory (weak): a definition that is mostly a displayed formula, with no sentence saying why this "
+                          "formula and no lemma deriving it (showing it is the unique answer to a stated requirement): add "
+                          "one or the other",
     "definition-states-fact": "advisory: a definition seems to state a fact; facts go in a lemma, where they are proved",
     "duplicate-concept": "advisory: two cards seem to define one concept (\"compact set\" and \"compact space\", "
                          "\"ideal\" and \"ideal of a ring\"), or a special case is defined and used before its general "
@@ -744,6 +757,45 @@ def _ref_only(proof_prose: str) -> bool:
     return len(re.findall(r"[A-Za-z]{2,}", t)) < 12
 
 
+def _words(prose: str) -> int:
+    """Words of a card's prose (formulas already marked MATH, commands not counted)."""
+    t = re.sub(r"\\[A-Za-z]+\*?", " ", re.sub(r"\bMATH\b", " ", prose))
+    return len(re.findall(r"[A-Za-z]{2,}", t))
+
+
+def size(source: str) -> dict:
+    """A card's measures for long-card: its top-level items, the words of its prose and its displayed formulas (the
+    statement's tag lines apart)."""
+    head = _tag_split(_body(source or ""))[0]
+    return {"items": _top_items(head), "words": _words(_commands(_no_math(head), ("href", "url"))),
+            "displays": len(DISPLAY_RE.findall(head))}
+
+
+WHY_RE = re.compile(r"\b(?:because|since|so that|in order|this (?:formula|choice|definition|normali[sz]ation|is the)|"
+                    r"chosen|choose|the reason|makes?|ensures?|motivat\w*|is the (?:unique|only)|uniquely|designed|"
+                    r"natural|we want|requires?|required)\b", re.I)
+
+
+def _formula_definition(it: dict, items: list[dict]) -> bool:
+    """A definition mostly a displayed formula, with no sentence of why and no lemma that \\uses it and says the formula is
+    the unique (only) answer to a requirement."""
+    head = _tag_split(_body(it.get("source") or ""))[0]
+    if not DISPLAY_RE.search(head):
+        return False
+    prose = _commands(_no_math(head), ("href", "url"))
+    math_chars = sum(len(m.group(0)) for m in MATH_RE.finditer(head))
+    if _words(prose) > 40 or math_chars < len(re.sub(r"\s+", "", prose)):
+        return False
+    if WHY_RE.search(prose):
+        return False
+    for o in items:
+        if o.get("kind") in ("lemma", "theorem", "proposition", "corollary") and it["label"] in (
+                o.get("uses") or re.findall(r"[^,\s{}]+", " ".join(re.findall(r"\\uses\s*\{([^}]*)\}", o.get("source") or "")))) \
+                and re.search(r"\b(?:unique(?:ly)?|the only)\b", _no_math(o.get("source") or ""), re.I):
+            return False
+    return True
+
+
 def style(items: list[dict]) -> list[dict]:
     """The style checks (forward-ref, chapter-mention, project-path, tag-lines, known-needs-why; advisory:
     proof-in-statement, long-card, definition-states-fact, duplicate-concept). Each item needs "label", "kind", "source", and for a proof
@@ -829,8 +881,23 @@ def style(items: list[dict]) -> list[dict]:
             if kind == "notation" and (n_items > 6 or heads > 1):
                 add("long-card", label, f"a notation card with {n_items} items and {heads} topic headings: one topic per "
                                         "notation card, just before its first use")
-            elif kind != "notation" and n_items > 4:
+            elif kind != "notation" and n_items > LIMITS["items"]:
                 add("long-card", label, f"{n_items} items: consider splitting the card")
+            if kind != "notation":
+                sz = size(it.get("source") or "")
+                if sz["words"] > LIMITS["words"]:
+                    add("long-card", label, f"{sz['words']} words in the statement: consider splitting or restructuring the card")
+                if sz["displays"] > LIMITS["displays"]:
+                    add("long-card", label, f"{sz['displays']} displayed formulas in the statement: consider splitting the card")
+                pr = proofs.get(label)
+                if pr is not None:
+                    pb = _body(pr.get("source") or "")
+                    pw = _words(_commands(_no_math(pb), ("href", "url"))) + WORDS_PER_DISPLAY * len(DISPLAY_RE.findall(pb))
+                    if pw > LIMITS["proof_words"]:
+                        add("long-card", label, f"a proof of about {pw} words: consider lemmas for its steps")
+        if kind == "definition" and _formula_definition(it, items):
+            add("formula-definition", label, "mostly a displayed formula: say in one sentence why this formula, or derive it "
+                                             "in a lemma (the unique answer to a stated requirement)")
         if kind == "definition":   # a sentence with the defined term in it defines; the others are read for facts
             marked = re.sub(r"\\defterm\s*(?:\[[^\]]*\]\s*)?\{", r"\\defterm{DEFTERM ", it.get("source") or "")
             flat = _commands(_no_math(_tag_split(_body(marked))[0]), ("href",))
